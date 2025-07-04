@@ -9,10 +9,12 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(express.json());
 
+// Test route
 app.get("/", (req, res) => {
   res.send("Rydr Stripe backend is running 🚗");
 });
 
+// Create SetupIntent
 app.post("/create-setup-intent", async (req, res) => {
   try {
     const customer = await stripe.customers.create();
@@ -26,6 +28,23 @@ app.post("/create-setup-intent", async (req, res) => {
   } catch (error) {
     console.error("Error creating SetupIntent:", error);
     res.status(500).send({ error: error.message });
+  }
+});
+
+// Create Stripe Customer
+app.post("/create-customer", async (req, res) => {
+  const { email, uid } = req.body;
+
+  try {
+    const customer = await stripe.customers.create({
+      email,
+      metadata: { firebaseUID: uid },
+    });
+
+    res.send({ customerId: customer.id });
+  } catch (error) {
+    console.error("Error creating customer:", error);
+    res.status(400).send({ error: error.message });
   }
 });
 
