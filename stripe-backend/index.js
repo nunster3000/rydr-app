@@ -9,31 +9,38 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(express.json());
 
-// Test route
+// ✅ Health check route
 app.get("/", (req, res) => {
-  res.send("Rydr Stripe backend is running 🚗");
+  res.send("Rydr Stripe backend is running");
 });
 
-// Create SetupIntent
+// ✅ Create SetupIntent using existing customerId from frontend
 app.post("/create-setup-intent", async (req, res) => {
+  const { customerId } = req.body;
+
+  if (!customerId) {
+    return res.status(400).json({ error: "Missing customerId" });
+  }
+
   try {
-    const customer = await stripe.customers.create();
     const setupIntent = await stripe.setupIntents.create({
-      customer: customer.id,
+      customer: customerId,
     });
 
-    res.send({
-      clientSecret: setupIntent.client_secret,
-    });
+    res.json({ clientSecret: setupIntent.client_secret });
   } catch (error) {
     console.error("Error creating SetupIntent:", error);
-    res.status(500).send({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Create Stripe Customer
+// ✅ Create a new Stripe customer and return the ID
 app.post("/create-customer", async (req, res) => {
   const { email, uid } = req.body;
+
+  if (!email || !uid) {
+    return res.status(400).json({ error: "Missing email or uid" });
+  }
 
   try {
     const customer = await stripe.customers.create({
@@ -41,10 +48,10 @@ app.post("/create-customer", async (req, res) => {
       metadata: { firebaseUID: uid },
     });
 
-    res.send({ customerId: customer.id });
+    res.json({ customerId: customer.id });
   } catch (error) {
     console.error("Error creating customer:", error);
-    res.status(400).send({ error: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
 
@@ -52,3 +59,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
