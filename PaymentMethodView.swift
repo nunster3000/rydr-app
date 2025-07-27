@@ -24,6 +24,12 @@ struct PaymentMethodView: View {
             }
         }
         .onAppear {
+            if let user = Auth.auth().currentUser {
+                print("✅ Firebase user logged in: \(user.uid)")
+            } else {
+                print("❌ Firebase user is not logged in")
+            }
+
             loadStripeCustomerId { existingCustomerId in
                 if let customerId = existingCustomerId {
                     print("Found Stripe customer ID: \(customerId)")
@@ -41,9 +47,17 @@ struct PaymentMethodView: View {
                         if let newId = newCustomerId {
                             print("Created new Stripe customer ID: \(newId)")
                             let db = Firestore.firestore()
+                            print("🧪 Attempting to save Stripe ID to Firestore for uid: \(uid), id: \(newId)")
                             db.collection("users").document(uid).setData([
                                 "stripeCustomerId": newId
-                            ], merge: true)
+                            ], merge: true) { error in
+                                if let error = error {
+                                    print("❌ Firestore save failed: \(error.localizedDescription)")
+                                } else {
+                                    print("✅ Saved Stripe customer ID to Firestore")
+                                }
+                            }
+
                             createSetupIntent(customerId: newId)
                         } else {
                             print("Failed to create Stripe customer.")
@@ -54,40 +68,30 @@ struct PaymentMethodView: View {
         }
     }
 
-    private func loadPaymentSheet() {
+    private func loadStripeCustomerId(completion: @escaping (String?) -> Void) {
         guard let user = Auth.auth().currentUser else {
-            print("User not logged in.")
+            print("User not logged in")
+            completion(nil)
             return
         }
 
         let uid = user.uid
-        let email = user.email ?? "noemail@example.com"
         let db = Firestore.firestore()
 
         db.collection("users").document(uid).getDocument { docSnapshot, error in
             if let error = error {
                 print("Firestore error: \(error.localizedDescription)")
+                completion(nil)
                 return
             }
 
-            let existingCustomerId = docSnapshot?.data()?["stripeCustomerId"] as? String
-
-            if let customerId = existingCustomerId {
-                print("Found existing Stripe customer ID: \(customerId)")
-                createSetupIntent(customerId: customerId)
+            if let data = docSnapshot?.data(),
+               let stripeCustomerId = data["stripeCustomerId"] as? String {
+                print("Found existing Stripe customer ID: \(stripeCustomerId)")
+                completion(stripeCustomerId)
             } else {
-                print("No Stripe customer ID found. Creating new one...")
-                createStripeCustomer(email: email, uid: uid) { newCustomerId in
-                    if let newId = newCustomerId {
-                        db.collection("users").document(uid).setData([
-                            "stripeCustomerId": newId
-                        ], merge: true)
-                        print("Saved new customer ID to Firestore.")
-                        createSetupIntent(customerId: newId)
-                    } else {
-                        print("Failed to create Stripe customer.")
-                    }
-                }
+                print("No Stripe customer ID found.")
+                completion(nil)
             }
         }
     }
@@ -140,34 +144,6 @@ struct PaymentMethodView: View {
                 completion(nil)
             }
         }.resume()
-    }
-
-    private func loadStripeCustomerId(completion: @escaping (String?) -> Void) {
-        guard let user = Auth.auth().currentUser else {
-            print("User not logged in")
-            completion(nil)
-            return
-        }
-
-        let uid = user.uid
-        let db = Firestore.firestore()
-
-        db.collection("users").document(uid).getDocument { docSnapshot, error in
-            if let error = error {
-                print("Firestore error: \(error.localizedDescription)")
-                completion(nil)
-                return
-            }
-
-            if let data = docSnapshot?.data(),
-               let stripeCustomerId = data["stripeCustomerId"] as? String {
-                print("Found existing Stripe customer ID: \(stripeCustomerId)")
-                completion(stripeCustomerId)
-            } else {
-                print("No Stripe customer ID found.")
-                completion(nil)
-            }
-        }
     }
 
     private func createSetupIntent(customerId: String) {
@@ -263,3 +239,4 @@ extension UIApplication {
         return base
     }
 }
+
