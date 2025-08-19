@@ -4,12 +4,16 @@
 //
 
 import SwiftUI
+import FirebaseAuth
+
 
 struct EmailAndPasswordView: View {
     @Binding var email: String
     @Binding var password: String
     @Binding var confirmPassword: String
     var onNext: () -> Void
+    
+    @State private var errorMessage = ""
 
     @State private var passwordValidations: [String: Bool] = [
         "At least 8 characters": false,
@@ -83,6 +87,16 @@ struct EmailAndPasswordView: View {
             .buttonStyle(.borderedProminent)
             .tint(.red)
             .disabled(!allValid)
+
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(!allValid)
+            
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .foregroundColor(.red)
+                    .font(.caption)
+            }
 
             Spacer()
         }

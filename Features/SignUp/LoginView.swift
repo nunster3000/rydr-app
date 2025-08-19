@@ -71,9 +71,28 @@ struct LoginView: View {
                     .accessibilityLabel("Password Field")
                 
                 Button("Log In with Email") {
-                    // TODO: Firebase email login
-                    session.login(name: "Rydr User", email: email)
+                    guard !email.isEmpty, !password.isEmpty else {
+                        errorMessage = "Please enter both email and password."
+                        return
+                    }
+                    
+                    guard isValidEmail(email) else {
+                        errorMessage = "Please enter a valid email address."
+                        return
+                    }
+                    
+                    Auth.auth().signIn(withEmail: email, password: password) { result, error in
+                        if let error = error {
+                            errorMessage = "Login failed: \(error.localizedDescription)"
+                        } else if let user = result?.user {
+                            session.login(name: user.displayName ?? "Rydr User", email: user.email ?? email)
+                        }
+                        
+                    }
+                
                 }
+                .disabled(email.isEmpty || password.isEmpty)
+                .opacity(email.isEmpty || password.isEmpty ? 0.5 : 1.0)
                 .frame(maxWidth: .infinity)
                 .padding()
                 .background(Styles.rydrGradient)

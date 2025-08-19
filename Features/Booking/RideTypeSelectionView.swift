@@ -7,7 +7,7 @@
 import SwiftUI
 
 struct RideTypeSelectionView: View {
-    var userName: String = "Khris" // Replace with actual user data in future
+    var userName: String = "Rydr User" // Replace with actual user data in future
 
     var body: some View {
         ZStack {
@@ -44,7 +44,7 @@ struct RideTypeSelectionView: View {
                     }
 
                     // SafeRydr
-                    NavigationLink(destination: BookingView(rideType: "SafeRydr", userName: userName)) {
+                    NavigationLink(destination: SafeRydrView()) {
                         RideOptionCard(title: "SafeRydr", subtitle: "Focused on security and family-friendly rides", icon: "shield.checkerboard")
                     }
                 }

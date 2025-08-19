@@ -17,6 +17,7 @@ struct RideInProgressView: View {
             span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
         )
     )
+    
     @State private var showChat = false
     @State private var etaDate: Date?
 

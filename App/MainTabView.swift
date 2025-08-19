@@ -9,14 +9,17 @@ import SwiftUI
 struct MainTabView: View {
     var body: some View {
         TabView {
+
+            // Ride
             NavigationStack {
-                RideTypeSelectionView() // Shows ride options like Rydr Go, XL, etc.
+                RideTypeSelectionView()
             }
             .tabItem {
                 Image(systemName: "car.fill")
                 Text("Ride")
             }
 
+            // Profile
             NavigationStack {
                 ProfileView()
             }
@@ -25,6 +28,7 @@ struct MainTabView: View {
                 Text("Profile")
             }
 
+            // RydrBank (uses your real view from its own file)
             NavigationStack {
                 RydrBankView()
             }
@@ -33,38 +37,33 @@ struct MainTabView: View {
                 Text("RydrBank")
             }
 
+            // Activity / History (keep the icon, unique placeholder name)
             NavigationStack {
-                RideHistoryView()
+                RideHistoryShortcutView()
+                    .navigationTitle("Activity")
             }
             .tabItem {
                 Image(systemName: "clock.arrow.circlepath")
                 Text("Activity")
             }
         }
-
-        .accentColor(.red) // Optional: make tab icon/text red when selected
+        .accentColor(.red)
     }
 }
 
-// MARK: - Placeholder Views for Screens
-struct RydrBankView: View {
+// MARK: - Unique placeholder (keeps your “Activity” shortcut)
+struct RideHistoryShortcutView: View {
     var body: some View {
-        Text("Welcome to RydrBank")
+        Text("Your Ride History (coming soon)")
             .font(.title)
+            .padding()
     }
 }
 
-struct RideHistoryView: View {
-    var body: some View {
-        Text("Your Ride History")
-            .font(.title)
-    }
-}
-
-// MARK: - Preview
 #Preview {
     MainTabView()
         .environmentObject(UserSessionManager())
 }
+
 
 

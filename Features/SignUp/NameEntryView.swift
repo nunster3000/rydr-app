@@ -11,14 +11,15 @@ import FirebaseCore
 import FirebaseFirestore
 
 struct NameEntryView: View {
-    @State private var firstName = ""
-    @State private var lastName = ""
-    @State private var preferredName = ""
-    @State private var errorMessage = ""
-    @State private var isSaving = false
+    @Binding var firstName: String
+    @Binding var lastName: String
+    @Binding var preferredName: String
 
     var onContinueWithForm: () -> Void
     var onContinueWithSocial: () -> Void
+
+    @State private var errorMessage = ""
+    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 25) {
@@ -42,7 +43,7 @@ struct NameEntryView: View {
                 .textFieldStyle(.roundedBorder)
 
             Button(isSaving ? "Saving..." : "Continue") {
-                saveUserToFirestore()
+                onContinueWithForm()
             }
             .disabled(isSaving)
             .buttonStyle(.borderedProminent)
@@ -94,44 +95,12 @@ struct NameEntryView: View {
         .padding()
     }
 
-    // MARK: — Firestore on submit
-    private func saveUserToFirestore() {
-        guard let uid = Auth.auth().currentUser?.uid else {
-            errorMessage = "Unable to get user ID"
-            return
-        }
-
-        isSaving = true
-        errorMessage = ""
-
-        let db = Firestore.firestore()
-        let userData: [String: Any] = [
-            "firstName": firstName,
-            "lastName": lastName,
-            "preferredName": preferredName,
-            "phoneNumber": Auth.auth().currentUser?.phoneNumber ?? "",
-            "createdAt": Timestamp()
-        ]
-
-        db.collection("users").document(uid)
-            .setData(userData) { error in
-                isSaving = false
-                if let error = error {
-                    errorMessage = "Failed to save user: \(error.localizedDescription)"
-                } else {
-                    print("✅ User data saved to Firestore")
-                    onContinueWithForm()
-                }
-            }
-    }
-
     // MARK: — Google Sign-Up
     private func handleGoogleSignIn() {
         guard FirebaseApp.app()?.options.clientID != nil else {
             errorMessage = "Missing client ID"
             return
         }
-
 
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let rootVC = windowScene.windows.first?.rootViewController else {
@@ -188,5 +157,6 @@ struct NameEntryView: View {
         }
     }
 }
+
 
 
