@@ -84,27 +84,38 @@ async function mintUniqueCode(t, uid) {
 }
 
 async function incrementEligibleAndMaybeMint(t, uid, rideId) {
-  const userRef = db.collection("users").doc(uid);
+  const userRef    = db.collection("users").doc(uid);
   const contribRef = userRef.collection("rydrContrib").doc(rideId);
 
-  const contribSnap = await t.get(contribRef);
-  if (contribSnap.exists) return null; // already counted
+  // READS FIRST (required by Firestore)
+  const [contribSnap, userSnap] = await Promise.all([
+    t.get(contribRef),
+    t.get(userRef),
+  ]);
 
+  // Idempotency: if we already counted this ride, do nothing
+  if (contribSnap.exists) return null;
+
+  const bank = (userSnap.exists ? userSnap.get("rydrBank") : null) || {};
+  const currentEligible = bank.eligibleCount || 0;
+  const nextEligible    = currentEligible + 1;
+
+  // WRITES AFTER ALL READS
   t.set(contribRef, { contributedAt: admin.firestore.FieldValue.serverTimestamp() });
-  const userSnap = await t.get(userRef);
-  const bank = userSnap.get("rydrBank") || {};
-  const eligibleCount = (bank.eligibleCount || 0) + 1;
-
   t.set(userRef, {
     rydrBank: {
-      eligibleCount: admin.firestore.FieldValue.increment(1),
-      totalEligible: admin.firestore.FieldValue.increment(1)
+      eligibleCount:  admin.firestore.FieldValue.increment(1),
+      totalEligible:  admin.firestore.FieldValue.increment(1),
     }
   }, { merge: true });
 
-  if (eligibleCount % 10 === 0) return await mintUniqueCode(t, uid);
+  // Every 10th eligible ride mints a code
+  if (nextEligible % 10 === 0) {
+    return await mintUniqueCode(t, uid);
+  }
   return null;
 }
+
 
 // ---- Routes ----
 
