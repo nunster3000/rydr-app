@@ -4,7 +4,9 @@
 //
 //  Created by Khris Nunnally on 8/19/25.
 //
+
 import SwiftUI
+import UIKit
 import FirebaseAuth
 import FirebaseFirestore
 
@@ -97,11 +99,17 @@ final class RydrBankVM: ObservableObject {
     }
 
     // MARK: - Transfer (one time)
+
     private func makeError(_ message: String) -> Error {
         NSError(domain: "RydrBank", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
-    func transfer(code: RydrBankCode, to email: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    // Updated to carry optional friend name/phone in payload (backend can ignore safely)
+    func transfer(code: RydrBankCode,
+                  to email: String,
+                  friendName: String? = nil,
+                  friendPhone: String? = nil,
+                  completion: @escaping (Result<Void, Error>) -> Void) {
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !email.isEmpty else {
             completion(.failure(makeError("Please enter a valid email.")))
@@ -123,7 +131,11 @@ final class RydrBankVM: ObservableObject {
                 req.httpMethod = "POST"
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
-                let payload: [String: Any] = ["code": code.code, "recipientEmail": email]
+
+                var payload: [String: Any] = ["code": code.code, "recipientEmail": email]
+                if let n = friendName, !n.trimmingCharacters(in: .whitespaces).isEmpty { payload["recipientName"] = n }
+                if let p = friendPhone, !p.trimmingCharacters(in: .whitespaces).isEmpty { payload["recipientPhone"] = p }
+
                 req.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
                 let (_, resp) = try await URLSession.shared.data(for: req)
@@ -148,6 +160,8 @@ struct RydrBankView: View {
     @State private var showTransferSheet = false
     @State private var transferTargetEmail = ""
     @State private var codePendingTransfer: RydrBankCode?
+    @State private var transferFriendName = ""
+    @State private var transferFriendPhone = ""
 
     // TEMP START: Dev mint helpers (remove when done testing)
     @State private var isMinting = false
@@ -155,12 +169,17 @@ struct RydrBankView: View {
     @State private var showMintAlert = false
     // TEMP END
 
+    // Copy confirmation
+    @State private var showCopyAlert = false
+    @State private var copiedCode: String?
+
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
                 balanceCard
                 progressCard(eligibleModulo: vm.summary.eligibleCount % 10)
-                codesSection
+                activeCodesSection
+                usedCodesSection
 
                 // TEMP START: Dev button to mint 10 eligible rides and (likely) earn a code
                 Button {
@@ -208,23 +227,71 @@ struct RydrBankView: View {
         .onAppear { vm.start() }
         .onDisappear { vm.stop() }
         .sheet(isPresented: $showTransferSheet) {
-            NavigationView {
+            TransferSheet
+        }
+        .alert("Copied", isPresented: $showCopyAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Promo code \(copiedCode ?? "") copied to clipboard.")
+        }
+    }
+
+    // MARK: - Transfer Sheet (uses Styles.rydrGradient directly; no undefined gradientColors)
+
+    private var TransferSheet: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                ZStack(alignment: .bottomLeading) {
+                    Rectangle()
+                        .fill(Styles.rydrGradient)   // ✅ use your existing gradient style
+                        .frame(height: 120)
+                        .ignoresSafeArea()
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Transfer Code")
+                            .font(.title2).bold()
+                            .foregroundColor(.white)
+                        if let c = codePendingTransfer?.code {
+                            Text(c).font(.subheadline).foregroundColor(.white.opacity(0.9))
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 12)
+                }
+
                 Form {
                     Section(header: Text("Recipient")) {
-                        TextField("Friend's email", text: $transferTargetEmail)
+                        TextField("Friend’s name (optional)", text: $transferFriendName)
+                            .textContentType(.name)
+                        TextField("Friend’s email", text: $transferTargetEmail)
+                            .keyboardType(.emailAddress)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
-                            .keyboardType(.emailAddress)
+                        TextField("Phone (optional, +15555551212)", text: $transferFriendPhone)
+                            .keyboardType(.phonePad)
                     }
+
                     Section {
-                        Button("Send Transfer") { submitTransfer() }
-                            .disabled(transferTargetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Cancel", role: .cancel) { cancelTransferPrompt() }
+                        Button {
+                            submitTransfer()
+                        } label: {
+                            HStack { Spacer(); Text("Send Transfer").fontWeight(.semibold); Spacer() }
+                        }
+                        .disabled(!canSubmitTransfer)
+
+                        Button("Cancel", role: .cancel) {
+                            cancelTransferPrompt()
+                        }
                     }
                 }
-                .navigationTitle("Transfer Code")
             }
+            .navigationBarHidden(true)
         }
+    }
+
+    private var canSubmitTransfer: Bool {
+        let email = transferTargetEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return email.contains("@") && email.contains(".") && codePendingTransfer != nil
     }
 
     // MARK: - Sections
@@ -295,7 +362,14 @@ struct RydrBankView: View {
         .padding(.horizontal)
     }
 
-    private var codesSection: some View {
+    private var activeOrReserved: [RydrBankCode] {
+        vm.codes.filter { $0.status == "active" || $0.status == "reserved" }
+    }
+    private var usedOrTransferred: [RydrBankCode] {
+        vm.codes.filter { $0.status == "used" || $0.status == "void" }
+    }
+
+    private var activeCodesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Your Codes")
@@ -305,15 +379,15 @@ struct RydrBankView: View {
             }
             .padding(.horizontal)
 
-            if vm.codes.isEmpty {
-                Text("No codes yet. Complete rides to start banking free rides.")
+            if activeOrReserved.isEmpty {
+                Text("No active codes. Complete rides or check Used Codes below.")
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
                     .padding(.bottom, 8)
             } else {
                 VStack(spacing: 10) {
-                    ForEach(vm.codes) { code in
-                        codeRow(code)
+                    ForEach(activeOrReserved) { code in
+                        codeRow(code, readOnly: false)
                     }
                 }
                 .padding(.horizontal)
@@ -321,8 +395,31 @@ struct RydrBankView: View {
         }
     }
 
+    private var usedCodesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if usedOrTransferred.isEmpty { EmptyView() } else {
+                HStack {
+                    Text("Used Codes")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal)
+
+                VStack(spacing: 10) {
+                    ForEach(usedOrTransferred) { code in
+                        codeRow(code, readOnly: true)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    // MARK: - Rows
+
     @ViewBuilder
-    private func codeRow(_ code: RydrBankCode) -> some View {
+    private func codeRow(_ code: RydrBankCode, readOnly: Bool) -> some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
@@ -333,25 +430,59 @@ struct RydrBankView: View {
                     .font(.system(size: 20, weight: .bold))
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(code.code)
                     .font(.subheadline).bold()
                     .textSelection(.enabled)
-                Text(label(for: code))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    if code.status == "active" {
+                        Text("Ready to use")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if code.transferCount == 0 && code.transferable {
+                            Text("Transferable once")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if code.status == "reserved" {
+                        statusBadge("Reserved")
+                    } else if code.status == "used" {
+                        statusBadge("Used", outlined: true)
+                    } else if code.status == "void" {
+                        statusBadge("Transferred", outlined: true)
+                    }
+                }
             }
 
             Spacer()
 
-            if code.status == "active", code.transferCount == 0, code.transferable {
-                Button("Transfer") {
-                    codePendingTransfer = code
-                    transferTargetEmail = ""
-                    showTransferSheet = true
+            HStack(spacing: 8) {
+                Button {
+                    UIPasteboard.general.string = code.code
+                    copiedCode = code.code
+                    showCopyAlert = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 16, weight: .semibold))
                 }
                 .buttonStyle(.bordered)
-                .tint(.red)
+                .tint(.gray)
+                .disabled(readOnly)
+
+                if !readOnly, code.status == "active", code.transferCount == 0, code.transferable {
+                    Button("Transfer") {
+                        codePendingTransfer = code
+                        transferTargetEmail = ""
+                        transferFriendName = ""
+                        transferFriendPhone = ""
+                        showTransferSheet = true
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                }
             }
         }
         .padding()
@@ -360,6 +491,7 @@ struct RydrBankView: View {
                 .fill(.white)
                 .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
         )
+        .opacity(readOnly ? 0.75 : 1)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(code.code), \(label(for: code))")
     }
@@ -369,7 +501,7 @@ struct RydrBankView: View {
         case "active": return "checkmark.seal"
         case "reserved": return "hourglass"
         case "used": return "seal"
-        case "void": return "xmark.seal"
+        case "void": return "arrow.uturn.right.circle" // transferred
         default: return "questionmark"
         }
     }
@@ -387,17 +519,38 @@ struct RydrBankView: View {
         }
     }
 
-    // MARK: - Transfer handlers
+    @ViewBuilder
+    private func statusBadge(_ text: String, outlined: Bool = false) -> some View {
+        let shape = Capsule()
+        if outlined {
+            Text(text)
+                .font(.caption2).bold()
+                .padding(.vertical, 5).padding(.horizontal, 8)
+                .overlay(shape.stroke(LinearGradient(colors: [Color(.systemPink), Color(.systemRed)], startPoint: .leading, endPoint: .trailing), lineWidth: 1))
+                .foregroundColor(.secondary)
+        } else {
+            Text(text)
+                .font(.caption2).bold()
+                .padding(.vertical, 5).padding(.horizontal, 8)
+                .background(Styles.rydrGradient.opacity(0.15))
+                .clipShape(shape)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Actions
 
     private func submitTransfer() {
         guard let code = codePendingTransfer else { return }
-        vm.transfer(code: code, to: transferTargetEmail) { result in
+        vm.transfer(code: code,
+                    to: transferTargetEmail,
+                    friendName: transferFriendName,
+                    friendPhone: transferFriendPhone) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:
                     showTransferSheet = false
-                    codePendingTransfer = nil
-                    transferTargetEmail = ""
+                    clearTransferForm()
                 case .failure(let error):
                     vm.errorMessage = error.localizedDescription
                 }
@@ -405,11 +558,20 @@ struct RydrBankView: View {
         }
     }
 
-    private func cancelTransferPrompt() {
-        showTransferSheet = false
+    private func clearTransferForm() {
         codePendingTransfer = nil
         transferTargetEmail = ""
+        transferFriendName = ""
+        transferFriendPhone = ""
+    }
+
+    private func cancelTransferPrompt() {
+        showTransferSheet = false
+        clearTransferForm()
     }
 }
+
+
+
 
 
