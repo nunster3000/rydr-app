@@ -27,16 +27,16 @@ struct Shortcut: Identifiable {
 struct BookingView: View {
     var rideType: String
     var userName: String
-
+    
     @StateObject private var locationManager = LocationManager()
     @StateObject private var userViewModel = UserViewModel()
     @StateObject private var pickupSearch = LocationSearchService()
     @StateObject private var dropoffSearch = LocationSearchService()
     @StateObject private var shortcutSearch = LocationSearchService()
-
+    
     @FocusState private var pickupFocused: Bool
     @FocusState private var dropoffFocused: Bool
-
+    
     @State private var pickupLocation = ""
     @State private var dropOffLocation = ""
     @State private var showDriverSelection = false
@@ -44,15 +44,15 @@ struct BookingView: View {
     @State private var showingShortcutInput: Shortcut?
     @State private var showingShortcutOptions: Shortcut?
     @State private var recentAddresses: [String] = []
-
+    
     @State private var cameraPosition = MapCameraPosition.region(
         MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 33.6407, longitude: -84.4277),
                            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))
     )
-
+    
     @State private var bottomSheetOffset: CGFloat = 0
     @GestureState private var dragOffset: CGFloat = 0
-
+    
     @State private var nearbyDrivers: [Driver] = [
         Driver(id: "1", name: "Alex", profileImage: "driver1", carImage: "car1", rating: 4.8, perMinute: 0.5, perMile: 1.2, driverScore: 88),
         Driver(id: "2", name: "Jamie", profileImage: "driver2", carImage: "car2", rating: 4.5, perMinute: 0.6, perMile: 1.1, driverScore: 72),
@@ -65,13 +65,13 @@ struct BookingView: View {
         Shortcut(label: "Work", value: nil, icon: "briefcase.fill"),
         Shortcut(label: "Custom", value: nil, icon: "mappin.and.ellipse")
     ]
-
+    
     // MARK: - Promo (RydrBank) state
     @State private var promoInput: String = ""
     @State private var appliedPromoCode: String? = nil
     @State private var promoMessage: String? = nil
     @State private var isApplyingPromo = false
-
+    
     var body: some View {
         ZStack {
             Map(position: $cameraPosition) {
@@ -79,18 +79,18 @@ struct BookingView: View {
             }
             .mapControls { MapUserLocationButton() }
             .ignoresSafeArea()
-
+            
             VStack {
                 Spacer()
-
+                
                 VStack(spacing: 20) {
                     Capsule()
                         .frame(width: 40, height: 6)
                         .foregroundColor(.gray.opacity(0.4))
-
+                    
                     Text("Ready to ride, \(userViewModel.userName)?")
                         .font(.headline)
-
+                    
                     // Shortcuts
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 16) {
@@ -120,13 +120,13 @@ struct BookingView: View {
                         }
                         .padding(.horizontal)
                     }
-
+                    
                     // Address fields + recents
                     VStack(alignment: .leading, spacing: 10) {
                         TextField("Enter Pickup Location", text: $pickupSearch.queryFragment)
                             .textFieldStyle(.roundedBorder)
                             .focused($pickupFocused)
-
+                        
                         if pickupFocused && !pickupSearch.suggestions.isEmpty {
                             List(pickupSearch.suggestions, id: \.self) { suggestion in
                                 Button(action: {
@@ -141,7 +141,7 @@ struct BookingView: View {
                             }
                             .frame(maxHeight: 150)
                         }
-
+                        
                         Button("Use Current Location") {
                             if let location = locationManager.currentLocation {
                                 let coordinate = location.coordinate
@@ -155,11 +155,11 @@ struct BookingView: View {
                         }
                         .font(.caption)
                         .foregroundColor(.blue)
-
+                        
                         TextField("Enter Drop-off Location", text: $dropoffSearch.queryFragment)
                             .textFieldStyle(.roundedBorder)
                             .focused($dropoffFocused)
-
+                        
                         if dropoffFocused && !dropoffSearch.suggestions.isEmpty {
                             List(dropoffSearch.suggestions, id: \.self) { suggestion in
                                 Button(action: {
@@ -175,7 +175,7 @@ struct BookingView: View {
                             }
                             .frame(maxHeight: 150)
                         }
-
+                        
                         if !recentAddresses.isEmpty {
                             VStack(alignment: .leading) {
                                 Text("Recents")
@@ -197,14 +197,14 @@ struct BookingView: View {
                                     .font(.caption)
                             }
                         }
-
+                        
                         HStack {
                             Image(systemName: "car.fill").foregroundColor(.red)
                             Text(rideType).bold()
                         }
                     }
                     .padding(.horizontal)
-
+                    
                     // MARK: - Promo code section
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -217,13 +217,13 @@ struct BookingView: View {
                             }
                             Spacer()
                         }
-
+                        
                         HStack(spacing: 8) {
                             TextField("Enter code", text: $promoInput)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
                                 .textFieldStyle(.roundedBorder)
-
+                            
                             if appliedPromoCode == nil {
                                 Button {
                                     Task { await applyPromo() }
@@ -242,7 +242,7 @@ struct BookingView: View {
                                 .foregroundColor(.red)
                             }
                         }
-
+                        
                         if let msg = promoMessage {
                             Text(msg)
                                 .font(.caption)
@@ -250,7 +250,7 @@ struct BookingView: View {
                         }
                     }
                     .padding(.horizontal)
-
+                    
                     Button(action: {
                         showDriverSelection = true
                     }) {
@@ -337,9 +337,9 @@ struct BookingView: View {
             }
         }
     }
-
+    
     // MARK: - Helpers
-
+    
     private func resolveAddress(_ suggestion: MKLocalSearchCompletion, completion: @escaping (String) -> Void) {
         let request = MKLocalSearch.Request(completion: suggestion)
         MKLocalSearch(request: request).start { response, _ in
@@ -352,114 +352,85 @@ struct BookingView: View {
             }
         }
     }
-
+    
     private func addToRecents(_ address: String) {
         if !recentAddresses.contains(address) {
             recentAddresses.insert(address, at: 0)
             if recentAddresses.count > 15 { recentAddresses.removeLast() }
         }
     }
-
+    
     // MARK: - Promo API calls
-
+    
     /// Validate + reserve the promo. Server should mark code "reserved" for this user.
     private func applyPromo() async {
-        guard !promoInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let code = promoInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return }
         isApplyingPromo = true
         promoMessage = nil
         do {
-            guard let user = Auth.auth().currentUser else {
-                promoMessage = "Please sign in to use a promo."
-                isApplyingPromo = false
-                return
-            }
-            let idToken = try await user.getIDToken()
-            var req = URLRequest(url: URL(string: "https://your-backend.example.com/promo/preview")!)
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
-
-            // You can send driver/tier and rough distance if you want a discount preview now.
-            let body: [String: Any] = [
-                "code": promoInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                "rideType": rideType
-            ]
-            req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                // Optional: parse preview amount from server response
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let previewText = json["message"] as? String {
-                    promoMessage = previewText
-                } else {
-                    promoMessage = "RydrBank applied: up to 15 miles free on your next ride."
-                }
-                appliedPromoCode = promoInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                promoMessage = "Invalid or unavailable code."
+            // Optional: pass a real booking id if you have one
+            let resp = try await RydrBankAPI.preview(code: code, bookingId: "bk_preview_ios")
+            if let ok = resp["ok"] as? Bool, ok == true {
+                appliedPromoCode = code
+                promoMessage = (resp["message"] as? String) ?? "RydrBank applied."
+            } else if let err = resp["error"] as? String {
                 appliedPromoCode = nil
+                promoMessage = err
+            } else {
+                appliedPromoCode = nil
+                promoMessage = "Could not apply code."
             }
         } catch {
-            promoMessage = "Network error. Please try again."
             appliedPromoCode = nil
+            promoMessage = error.localizedDescription
         }
         isApplyingPromo = false
     }
-
+    
     /// Release reservation (if any) when the user clears the promo or backs out.
     private func clearPromo() async {
-        guard let current = appliedPromoCode else {
-            // nothing to release, just clear the field
-            promoInput = ""
-            promoMessage = nil
-            return
-        }
-        do {
-            guard let user = Auth.auth().currentUser else { return }
-            let idToken = try await user.getIDToken()
-            var req = URLRequest(url: URL(string: "https://your-backend.example.com/promo/release")!)
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
-            req.httpBody = try JSONSerialization.data(withJSONObject: ["code": current])
-
-            _ = try await URLSession.shared.data(for: req)
-        } catch {
-            // Even if release fails, clear locally so the UI doesn’t trap the user
+        // If a code was applied/reserved, tell the backend to release it
+        if let current = appliedPromoCode {
+            do {
+                try await RydrBankAPI.release(code: current)
+            } catch {
+                // Non-blocking: even if the network fails, clear the UI locally
+                print("Release failed:", error.localizedDescription)
+            }
         }
         appliedPromoCode = nil
         promoInput = ""
         promoMessage = nil
     }
-}
-
-struct ShortcutButton: View {
-    let label: String
-    let icon: String
-    let tapAction: () -> Void
-    let longPressAction: () -> Void
-
-    var body: some View {
-        Button(action: tapAction) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .resizable()
-                    .frame(width: 24, height: 24)
-                Text(label)
-                    .font(.caption2)
+    
+    
+    struct ShortcutButton: View {
+        let label: String
+        let icon: String
+        let tapAction: () -> Void
+        let longPressAction: () -> Void
+        
+        var body: some View {
+            Button(action: tapAction) {
+                VStack(spacing: 4) {
+                    Image(systemName: icon)
+                        .resizable()
+                        .frame(width: 24, height: 24)
+                    Text(label)
+                        .font(.caption2)
+                }
+                .padding(8)
+                .frame(width: 70, height: 70)
+                .background(Color.white)
+                .cornerRadius(10)
             }
-            .padding(8)
-            .frame(width: 70, height: 70)
-            .background(Color.white)
-            .cornerRadius(10)
+            .simultaneousGesture(
+                LongPressGesture().onEnded { _ in longPressAction() }
+            )
         }
-        .simultaneousGesture(
-            LongPressGesture().onEnded { _ in longPressAction() }
-        )
     }
 }
-
 
 
 

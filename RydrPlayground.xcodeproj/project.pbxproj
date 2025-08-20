@@ -15,7 +15,6 @@
 		8B2D68FA2E4160F20043BDBE /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = 8B2D68F92E4160F20043BDBE /* FirebaseFunctions */; };
 		8B2D68FC2E4160F20043BDBE /* FirebaseInAppMessaging-Beta in Frameworks */ = {isa = PBXBuildFile; productRef = 8B2D68FB2E4160F20043BDBE /* FirebaseInAppMessaging-Beta */; };
 		8B2D68FE2E4160F20043BDBE /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 8B2D68FD2E4160F20043BDBE /* FirebaseStorage */; };
-		8BC309DD2E55386A00CCD3E0 /* server.js in Resources */ = {isa = PBXBuildFile; fileRef = 8BC309DC2E55385C00CCD3E0 /* server.js */; };
 		D917BFB62E04AEB900F44272 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = D917BFB52E04AEB900F44272 /* GoogleSignIn */; };
 		D917BFB82E04AEB900F44272 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = D917BFB72E04AEB900F44272 /* GoogleSignInSwift */; };
 		D9723BF62DFDB2BA0075DBC1 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = D9723BF52DFDB2BA0075DBC1 /* FirebaseAnalytics */; };
@@ -49,7 +48,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		8BC309DC2E55385C00CCD3E0 /* server.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = server.js; sourceTree = "<group>"; };
 		D9A571E42DF9C6A900C04006 /* RydrPlayground.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RydrPlayground.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D9A571F22DF9C6AB00C04006 /* RydrPlaygroundTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RydrPlaygroundTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D9A571FC2DF9C6AB00C04006 /* RydrPlaygroundUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RydrPlaygroundUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -219,7 +217,6 @@
 		D9A571DB2DF9C6A900C04006 = {
 			isa = PBXGroup;
 			children = (
-				8BC309DC2E55385C00CCD3E0 /* server.js */,
 				8BC309CB2E538CD300CCD3E0 /* Features */,
 				8BC309CA2E538CBB00CCD3E0 /* SharedUI */,
 				8BC309C92E538CB000CCD3E0 /* Core */,
@@ -391,7 +388,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8BC309DD2E55386A00CCD3E0 /* server.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

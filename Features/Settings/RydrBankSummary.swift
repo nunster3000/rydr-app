@@ -119,7 +119,7 @@ final class RydrBankVM: ObservableObject {
             }
             do {
                 let idToken = try await user.getIDToken()
-                var req = URLRequest(url: URL(string: "https://your-backend.example.com/promo/transfer")!)
+                var req = URLRequest(url: URL(string: "https://rydr-bank.onrender.com/promo/transfer")!)
                 req.httpMethod = "POST"
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
@@ -149,12 +149,53 @@ struct RydrBankView: View {
     @State private var transferTargetEmail = ""
     @State private var codePendingTransfer: RydrBankCode?
 
+    // TEMP START: Dev mint helpers (remove when done testing)
+    @State private var isMinting = false
+    @State private var mintAlert: String?
+    @State private var showMintAlert = false
+    // TEMP END
+
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
                 balanceCard
                 progressCard(eligibleModulo: vm.summary.eligibleCount % 10)
                 codesSection
+
+                // TEMP START: Dev button to mint 10 eligible rides and (likely) earn a code
+                Button {
+                    Task {
+                        isMinting = true
+                        do {
+                            if let code = try await RydrBankAPI.mintTenDevRides() {
+                                mintAlert = "Minted code: \(code)"
+                            } else {
+                                mintAlert = "No code minted. If some rides were already counted, run again."
+                            }
+                            showMintAlert = true
+                        } catch {
+                            mintAlert = "Mint failed: \(error.localizedDescription)"
+                            showMintAlert = true
+                        }
+                        isMinting = false
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isMinting { ProgressView() }
+                        Text(isMinting ? "Minting…" : "Dev: Mint 10 Eligible Rides")
+                            .bold()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                .padding(.horizontal)
+                .alert("RydrBank", isPresented: $showMintAlert) {
+                    Button("OK", role: .cancel) { }
+                } message: {
+                    Text(mintAlert ?? "")
+                }
+                // TEMP END
+
                 Text("Earn 1 banked ride after every 10 completed rides of 5 miles or more. Each banked ride covers up to 15 miles on a single trip. Codes do not expire.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -370,4 +411,5 @@ struct RydrBankView: View {
         transferTargetEmail = ""
     }
 }
+
 

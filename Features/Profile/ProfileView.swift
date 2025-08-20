@@ -103,6 +103,7 @@ struct ProfileView: View {
             ImagePicker(selectedImage: $pickedUIImage, sourceType: .photoLibrary)
         }
     }
+    
 
     // MARK: - Preferences card
     private var preferencesCard: some View {
