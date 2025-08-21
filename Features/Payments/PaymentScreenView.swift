@@ -33,9 +33,7 @@ struct PaymentScreenView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            Button {
-                startSetupFlow()
-            } label: {
+            Button { startSetupFlow() } label: {
                 Text("Add Payment Method").frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -119,22 +117,19 @@ struct PaymentScreenView: View {
         }
     }
 
-    // MARK: - Ensure user has a Stripe customer (read Firestore; create/store if missing)
+    // MARK: - Ensure user has a Stripe customer (self-healing)
     private func fetchOrCreateCustomer(for user: User, completion: @escaping (Result<String, Error>) -> Void) {
         let uid = user.uid
         let docRef = Firestore.firestore().collection("users").document(uid)
 
-        docRef.getDocument { snap, err in
-            if let err = err {
-                completion(.failure(err)); return
-            }
-
+        // Try to read; if it fails or is missing, we’ll create/reuse via backend.
+        docRef.getDocument { snap, _ in
             if let cid = snap?.data()?["stripeCustomerId"] as? String, !cid.isEmpty {
                 completion(.success(cid))
                 return
             }
 
-            // No customer stored — create/reuse by email on backend, then save to Firestore
+            // No stored customer or read blocked — create/reuse by email on backend.
             let email = user.email ?? "user-\(uid)@example.com"
             let name  = user.displayName ?? "Rydr User"
 
@@ -143,32 +138,47 @@ struct PaymentScreenView: View {
                     completion(.failure(NSError(domain: "Stripe", code: -1, userInfo: [NSLocalizedDescriptionKey: "Server returned no customerId."])))
                     return
                 }
-                docRef.setData(["stripeCustomerId": cid], merge: true) { writeErr in
-                    if let writeErr = writeErr { completion(.failure(writeErr)) }
-                    else { completion(.success(cid)) }
+
+                // Try to persist, but don’t block success if it fails (e.g., temporary rules/App Check)
+                docRef.setData(["stripeCustomerId": cid], merge: true) { _ in
+                    completion(.success(cid))
                 }
             }
         }
     }
 
-    // MARK: - Networking helper
+    // MARK: - Networking helper (adds Firebase ID token automatically)
     private func requestJSON<T: Decodable>(
         path: String,
         body: [String: Any],
         extraHeaders: [String: String] = [:],
         completion: @escaping (T?) -> Void
     ) {
-        var req = URLRequest(url: backendBase.appendingPathComponent(path))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        for (k, v) in extraHeaders { req.setValue(v, forHTTPHeaderField: k) }
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
+        var baseReq = URLRequest(url: backendBase.appendingPathComponent(path))
+        baseReq.httpMethod = "POST"
+        baseReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for (k, v) in extraHeaders { baseReq.setValue(v, forHTTPHeaderField: k) }
+        baseReq.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
 
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data = data else { completion(nil); return }
-            let obj = try? JSONDecoder().decode(T.self, from: data)
-            completion(obj)
-        }.resume()
+        func send(_ req: URLRequest) {
+            URLSession.shared.dataTask(with: req) { data, _, _ in
+                guard let data = data else { completion(nil); return }
+                let obj = try? JSONDecoder().decode(T.self, from: data)
+                completion(obj)
+            }.resume()
+        }
+
+        if let user = Auth.auth().currentUser {
+            user.getIDToken { token, _ in
+                var req = baseReq
+                if let token = token {
+                    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
+                send(req)
+            }
+        } else {
+            send(baseReq)
+        }
     }
 
     // MARK: - Small UI helper used above

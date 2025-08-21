@@ -3,43 +3,75 @@
 //  RydrPlayground
 //
 //  Created by Khris Nunnally on 6/15/25.
+//
+
 import UIKit
 import FirebaseCore
 import FirebaseAuth
 import FirebaseAppCheck
+import Stripe
 
 class AppDelegate: NSObject, UIApplicationDelegate {
 
-    func application(_ application: UIApplication,
-                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        FirebaseApp.configure()
+  func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+  ) -> Bool {
 
-        // ✅ Make Firebase Phone Auth work on the iOS simulator (dev-only)
-        #if DEBUG
-        Auth.auth().settings?.isAppVerificationDisabledForTesting = true
-        #endif
-
-        return true
+    // ✅ App Check provider MUST be set BEFORE FirebaseApp.configure()
+    #if targetEnvironment(simulator)
+    // Simulator: use Debug provider so Firestore works with enforcement ON
+    AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
+    print("🔐 AppCheck: Debug provider (simulator)")
+    #else
+    // Devices: prefer App Attest (iOS 14+), fallback to DeviceCheck
+    if #available(iOS 14.0, *) {
+      AppCheck.setAppCheckProviderFactory(AppAttestProviderFactory())
+      print("🔐 AppCheck: App Attest provider (device)")
+    } else {
+      AppCheck.setAppCheckProviderFactory(DeviceCheckProviderFactory())
+      print("🔐 AppCheck: DeviceCheck provider (device)")
     }
+    #endif
 
-    // Handle Firebase phone verification links (deep links)
-    func application(_ application: UIApplication,
-                     open url: URL,
-                     options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
-        return Auth.auth().canHandle(url)
-    }
+    // ✅ Firebase
+    FirebaseApp.configure()
 
-    // Handle Firebase-related remote notifications
-    func application(_ application: UIApplication,
-                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        if Auth.auth().canHandleNotification(userInfo) {
-            completionHandler(.noData)
-            return
-        }
-        completionHandler(.noData)
+    // (Optional) Easier phone auth in DEBUG on simulator
+    #if DEBUG
+    Auth.auth().settings?.isAppVerificationDisabledForTesting = true
+    #endif
+
+    // ✅ Stripe publishable key (your provided test key)
+    StripeAPI.defaultPublishableKey = "pk_test_51RcVGsPdK3HOzC79wL6tFq0EDuB9vtE1Yl2faUdj1Br15hrtAvB3oWNJTbTSNIj97jLGYrV0z9uZwiupE4cLhyk500xfc9MLm5"
+    print("💳 Stripe PK set")
+
+    return true
+  }
+
+  // Firebase phone auth deep link handler
+  func application(
+    _ application: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey : Any] = [:]
+  ) -> Bool {
+    return Auth.auth().canHandle(url)
+  }
+
+  // Remote notifications passthrough (leave as-is)
+  func application(
+    _ application: UIApplication,
+    didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+  ) {
+    if Auth.auth().canHandleNotification(userInfo) {
+      completionHandler(.noData)
+      return
     }
+    completionHandler(.noData)
+  }
 }
+
 
 
 
