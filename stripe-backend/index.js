@@ -4,7 +4,6 @@ const cors = require("cors");
 const Stripe = require("stripe");
 const dotenv = require("dotenv");
 
-// Load .env locally; on Render, set env vars in the dashboard
 dotenv.config();
 
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -16,10 +15,6 @@ const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // ---------- CORS ----------
-/**
- * Allow your web origins for local/dev + prod.
- * Mobile apps (iOS/Android) often send no Origin, so we allow !origin too.
- */
 const allowed = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map(o => o.trim())
@@ -39,7 +34,7 @@ app.get("/", (_req, res) => {
   res.send("✅ Rydr Stripe backend is running");
 });
 
-// ---------- WEBHOOK (must receive RAW BODY; mount BEFORE express.json) ----------
+// ---------- WEBHOOK (RAW BODY) ----------
 app.post(
   "/webhook",
   express.raw({ type: "application/json" }),
@@ -59,7 +54,6 @@ app.post(
       case "payment_intent.succeeded": {
         const pi = event.data.object;
         console.log("💰 Payment succeeded:", pi.id);
-        // TODO: mark order/booking paid in your DB
         break;
       }
       case "payment_intent.payment_failed": {
@@ -70,7 +64,6 @@ app.post(
       case "setup_intent.succeeded": {
         const si = event.data.object;
         console.log("💳 Setup succeeded:", si.id);
-        // TODO: mark user has a saved payment method
         break;
       }
       default:
@@ -84,38 +77,57 @@ app.post(
 // ---------- JSON parser for all *other* routes ----------
 app.use(express.json());
 
-// ---------- Customers ----------
+// ---------- Customers (create-or-get) ----------
 /**
- * Create or fetch a Customer. If email is provided, reuse existing when possible.
+ * Body: { uid?: string, email?: string, name?: string }
  * Returns: { customerId }
+ * Strategy: prefer metadata.firebase_uid; fallback to email; else create.
  */
 app.post("/create-customer", async (req, res) => {
   try {
-    const { email, name, metadata } = req.body || {};
+    const { uid, email, name } = req.body || {};
 
-    let customerId;
+    // 1) Find by uid in metadata (if provided)
+    if (uid) {
+      const byUid = await stripe.customers.search({
+        query: `metadata['firebase_uid']:'${uid}'`,
+      });
+      if (byUid.data.length) {
+        return res.json({ customerId: byUid.data[0].id });
+      }
+    }
+
+    // 2) Fallback by email (if provided)
     if (email) {
-      const list = await stripe.customers.list({ email, limit: 1 });
-      if (list.data.length) customerId = list.data[0].id;
+      const byEmail = await stripe.customers.search({ query: `email:'${email}'` });
+      if (byEmail.data.length) {
+        // backfill uid for future lookups
+        if (uid) {
+          await stripe.customers.update(byEmail.data[0].id, {
+            metadata: { firebase_uid: uid },
+          });
+        }
+        return res.json({ customerId: byEmail.data[0].id });
+      }
     }
 
-    if (!customerId) {
-      const customer = await stripe.customers.create({ email, name, metadata });
-      customerId = customer.id;
-    }
+    // 3) Create new customer
+    const customer = await stripe.customers.create({
+      email: email || undefined,
+      name: name || undefined,
+      metadata: uid ? { firebase_uid: uid } : undefined,
+    });
 
-    res.json({ customerId });
+    res.json({ customerId: customer.id });
   } catch (err) {
     console.error("❌ create-customer:", err);
     res.status(400).json({ error: err.message });
   }
 });
 
-// ---------- Ephemeral Key (for PaymentSheet / CustomerSheet) ----------
+// ---------- Ephemeral Key ----------
 /**
- * Create an Ephemeral Key for the given customer.
- * You *must* pass the Stripe API version used by the mobile SDK.
- * Request headers: { "Stripe-Version": "<sdk api version>" }
+ * Headers: { "Stripe-Version": "<iOS SDK API version>" }
  * Body: { customerId: "cus_..." }
  */
 app.post("/ephemeral-key", async (req, res) => {
@@ -123,18 +135,13 @@ app.post("/ephemeral-key", async (req, res) => {
     const { customerId } = req.body || {};
     const stripeVersion =
       req.headers["stripe-version"] || req.headers["Stripe-Version"];
-
     if (!customerId) throw new Error("customerId is required");
-    if (!stripeVersion)
-      throw new Error(
-        'Stripe-Version header is required (use the mobile SDK’s API version)'
-      );
+    if (!stripeVersion) throw new Error("Stripe-Version header is required");
 
     const key = await stripe.ephemeralKeys.create(
       { customer: customerId },
       { apiVersion: String(stripeVersion) }
     );
-
     res.status(200).json(key);
   } catch (err) {
     console.error("❌ ephemeral-key:", err);
@@ -142,20 +149,20 @@ app.post("/ephemeral-key", async (req, res) => {
   }
 });
 
-// ---------- SetupIntent (save a card for later) ----------
+// ---------- SetupIntent (save card) ----------
 /**
- * Create a SetupIntent tied to a Customer to collect & save a card.
+ * Body: { customerId: "cus_..." }
  * Returns: { clientSecret }
  */
 app.post("/create-setup-intent", async (req, res) => {
   try {
-    const { customerId, usage } = req.body || {};
+    const { customerId } = req.body || {};
     if (!customerId) throw new Error("customerId is required");
 
     const si = await stripe.setupIntents.create({
       customer: customerId,
-      usage: usage || "off_session", // or 'on_session' based on your flow
       payment_method_types: ["card"],
+      usage: "off_session",
     });
 
     res.json({ clientSecret: si.client_secret });
@@ -165,10 +172,9 @@ app.post("/create-setup-intent", async (req, res) => {
   }
 });
 
-// ---------- PaymentIntent (charge now) ----------
+// ---------- PaymentIntent (charge) ----------
 /**
- * Create a PaymentIntent (e.g., for booking charges).
- * Request: { amount: 1099, currency: "usd", customerId?: "cus_..." }
+ * Body: { amount: <int cents>, currency: "usd", customerId?: "cus_..." }
  * Returns: { clientSecret, paymentIntentId }
  */
 app.post("/create-payment-intent", async (req, res) => {
@@ -185,7 +191,7 @@ app.post("/create-payment-intent", async (req, res) => {
       currency,
       customer: customerId,
       automatic_payment_methods: { enabled: !!automatic },
-      metadata: req.body?.metadata || {}, // link to booking/ride IDs here
+      metadata: req.body?.metadata || {},
     });
 
     res.json({ clientSecret: pi.client_secret, paymentIntentId: pi.id });
@@ -198,6 +204,8 @@ app.post("/create-payment-intent", async (req, res) => {
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+});
+
 });
 
 
