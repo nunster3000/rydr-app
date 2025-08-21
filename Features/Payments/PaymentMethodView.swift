@@ -7,53 +7,76 @@
 import SwiftUI
 import Stripe
 import StripePaymentSheet
-import Firebase
-import FirebaseAuth
 
 struct PaymentMethodView: View {
+    // REQUIRED
     let clientSecret: String
-    var completion: (Result<String, Error>) -> Void
+
+    // OPTIONAL (customer-aware mode if provided)
+    let customerId: String?
+    let ephemeralKeySecret: String?
+
+    // Completion callback
+    let completion: (Result<String, Error>) -> Void
 
     @State private var paymentSheet: PaymentSheet?
 
-    var body: some View {
-        Text("Presenting Payment Sheet...") // Optional placeholder
-            .onAppear {
-                var config = PaymentSheet.Configuration()
-                config.merchantDisplayName = "Rydr"
-
-                self.paymentSheet = PaymentSheet(
-                    setupIntentClientSecret: clientSecret,
-                    configuration: config
-                )
-
-                presentPaymentSheet()
-            }
+    // ✅ Explicit initializer so your call with trailing closure compiles
+    init(
+        clientSecret: String,
+        customerId: String? = nil,
+        ephemeralKeySecret: String? = nil,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        self.clientSecret = clientSecret
+        self.customerId = customerId
+        self.ephemeralKeySecret = ephemeralKeySecret
+        self.completion = completion
     }
 
-    private func presentPaymentSheet() {
-        guard let paymentSheet = paymentSheet,
-              let topVC = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .flatMap({ $0.windows })
-                .first(where: { $0.isKeyWindow })?
-                .rootViewController else {
-            print("❌ Failed to access root view controller")
-            return
+    var body: some View {
+        Color.clear.onAppear { prepareAndPresent() }
+    }
+
+    private func prepareAndPresent() {
+        var config = PaymentSheet.Configuration()
+        config.merchantDisplayName = "Rydr"
+
+        if let cid = customerId,
+           let ekey = ephemeralKeySecret,
+           !cid.isEmpty, !ekey.isEmpty {
+            config.customer = .init(id: cid, ephemeralKeySecret: ekey)
         }
 
-        paymentSheet.present(from: topVC) { result in
+        self.paymentSheet = PaymentSheet(
+            setupIntentClientSecret: clientSecret,
+            configuration: config
+        )
+        present()
+    }
+
+    private func present() {
+        guard
+            let paymentSheet = paymentSheet,
+            let windowScene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first,
+            let root = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        else { return }
+
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+
+        paymentSheet.present(from: top) { result in
             switch result {
             case .completed:
-                print("✅ Payment method added")
                 completion(.success("Payment method added"))
             case .canceled:
-                print("❌ Payment canceled")
                 completion(.failure(NSError(domain: "UserCanceled", code: 0)))
             case .failed(let error):
-                print("❌ Payment failed: \(error.localizedDescription)")
                 completion(.failure(error))
             }
         }
     }
 }
+
+
