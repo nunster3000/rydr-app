@@ -3,7 +3,6 @@ const express = require("express");
 const cors = require("cors");
 const Stripe = require("stripe");
 const dotenv = require("dotenv");
-
 dotenv.config();
 
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -12,82 +11,65 @@ if (!process.env.STRIPE_SECRET_KEY) {
 }
 
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20",
+});
 
-// ---------- CORS ----------
+// ---- CORS (optional) ----
 const allowed = (process.env.CORS_ORIGINS || "")
-  .split(",")
-  .map(o => o.trim())
-  .filter(Boolean);
-
+  .split(",").map(s => s.trim()).filter(Boolean);
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin || allowed.includes(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
+      if (!origin || allowed.length === 0 || allowed.includes(origin)) return cb(null, true);
+      cb(new Error("Not allowed by CORS"));
     },
   })
 );
 
-// ---------- Health ----------
-app.get("/", (_req, res) => {
-  res.send("✅ Rydr Stripe backend is running");
-});
+// ---- Health ----
+app.get("/", (_req, res) => res.send("✅ Rydr Stripe backend is running"));
 
-// ---------- WEBHOOK (RAW BODY) ----------
-app.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-    } catch (err) {
-      console.error("❌ Webhook signature verification failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
+// ---- Webhook (RAW body; must be mounted BEFORE express.json) ----
+app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  try {
+    const event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
 
     switch (event.type) {
-      case "payment_intent.succeeded": {
-        const pi = event.data.object;
-        console.log("💰 Payment succeeded:", pi.id);
+      case "setup_intent.succeeded":
+        console.log("💳 Setup succeeded:", event.data.object.id);
         break;
-      }
-      case "payment_intent.payment_failed": {
-        const pi = event.data.object;
-        console.log("⚠️ Payment failed:", pi.id);
+      case "payment_intent.succeeded":
+        console.log("💰 Payment succeeded:", event.data.object.id);
         break;
-      }
-      case "setup_intent.succeeded": {
-        const si = event.data.object;
-        console.log("💳 Setup succeeded:", si.id);
+      case "payment_intent.payment_failed":
+        console.log("⚠️ Payment failed:", event.data.object.id);
         break;
-      }
       default:
-        console.log(`ℹ️ Unhandled event type: ${event.type}`);
+        console.log("ℹ️ Unhandled event:", event.type);
     }
-
-    res.json({ received: true });
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Webhook verify failed:", err.message);
+    res.status(400).send(`Webhook Error: ${err.message}`);
   }
-);
+});
 
-// ---------- JSON parser for all *other* routes ----------
+// ---- JSON parser for all other routes ----
 app.use(express.json());
 
-// ---------- Customers (create-or-get) ----------
-/**
- * Body: { uid?: string, email?: string, name?: string }
- * Returns: { customerId }
- * Strategy: prefer metadata.firebase_uid; fallback to email; else create.
- */
+// ---- Create or get Customer ----
+// Body: { uid?: string, email?: string, name?: string } -> { customerId }
 app.post("/create-customer", async (req, res) => {
   try {
     const { uid, email, name } = req.body || {};
 
-    // 1) Find by uid in metadata (if provided)
+    // 1) Prefer lookup by Firebase UID in metadata
     if (uid) {
       const byUid = await stripe.customers.search({
         query: `metadata['firebase_uid']:'${uid}'`,
@@ -97,11 +79,10 @@ app.post("/create-customer", async (req, res) => {
       }
     }
 
-    // 2) Fallback by email (if provided)
+    // 2) Fallback by email (if migrating older customers)
     if (email) {
       const byEmail = await stripe.customers.search({ query: `email:'${email}'` });
       if (byEmail.data.length) {
-        // backfill uid for future lookups
         if (uid) {
           await stripe.customers.update(byEmail.data[0].id, {
             metadata: { firebase_uid: uid },
@@ -111,13 +92,12 @@ app.post("/create-customer", async (req, res) => {
       }
     }
 
-    // 3) Create new customer
+    // 3) Create new
     const customer = await stripe.customers.create({
       email: email || undefined,
       name: name || undefined,
       metadata: uid ? { firebase_uid: uid } : undefined,
     });
-
     res.json({ customerId: customer.id });
   } catch (err) {
     console.error("❌ create-customer:", err);
@@ -125,46 +105,37 @@ app.post("/create-customer", async (req, res) => {
   }
 });
 
-// ---------- Ephemeral Key ----------
-/**
- * Headers: { "Stripe-Version": "<iOS SDK API version>" }
- * Body: { customerId: "cus_..." }
- */
+// ---- Ephemeral Key ----
+// Headers: Stripe-Version; Body: { customerId }
 app.post("/ephemeral-key", async (req, res) => {
   try {
     const { customerId } = req.body || {};
-    const stripeVersion =
-      req.headers["stripe-version"] || req.headers["Stripe-Version"];
+    const apiVer = req.headers["stripe-version"];
     if (!customerId) throw new Error("customerId is required");
-    if (!stripeVersion) throw new Error("Stripe-Version header is required");
+    if (!apiVer) throw new Error("Missing Stripe-Version header");
 
     const key = await stripe.ephemeralKeys.create(
       { customer: customerId },
-      { apiVersion: String(stripeVersion) }
+      { apiVersion: String(apiVer) }
     );
-    res.status(200).json(key);
+    res.json(key);
   } catch (err) {
     console.error("❌ ephemeral-key:", err);
     res.status(400).json({ error: err.message });
   }
 });
 
-// ---------- SetupIntent (save card) ----------
-/**
- * Body: { customerId: "cus_..." }
- * Returns: { clientSecret }
- */
+// ---- SetupIntent (save a card) ----
+// Body: { customerId } -> { clientSecret }
 app.post("/create-setup-intent", async (req, res) => {
   try {
     const { customerId } = req.body || {};
     if (!customerId) throw new Error("customerId is required");
-
     const si = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ["card"],
       usage: "off_session",
     });
-
     res.json({ clientSecret: si.client_secret });
   } catch (err) {
     console.error("❌ create-setup-intent:", err);
@@ -172,28 +143,20 @@ app.post("/create-setup-intent", async (req, res) => {
   }
 });
 
-// ---------- PaymentIntent (charge) ----------
-/**
- * Body: { amount: <int cents>, currency: "usd", customerId?: "cus_..." }
- * Returns: { clientSecret, paymentIntentId }
- */
+// ---- PaymentIntent (charge) ----
+// Body: { amount (cents), currency, customerId? } -> { clientSecret, paymentIntentId }
 app.post("/create-payment-intent", async (req, res) => {
   try {
-    const { amount, currency = "usd", customerId, automatic = true } =
-      req.body || {};
-
+    const { amount, currency = "usd", customerId } = req.body || {};
     if (!Number.isInteger(amount) || amount <= 0) {
-      throw new Error("amount (integer, cents) is required and must be > 0");
+      throw new Error("amount (integer cents) is required and must be > 0");
     }
-
     const pi = await stripe.paymentIntents.create({
       amount,
       currency,
       customer: customerId,
-      automatic_payment_methods: { enabled: !!automatic },
-      metadata: req.body?.metadata || {},
+      automatic_payment_methods: { enabled: true },
     });
-
     res.json({ clientSecret: pi.client_secret, paymentIntentId: pi.id });
   } catch (err) {
     console.error("❌ create-payment-intent:", err);
@@ -201,12 +164,10 @@ app.post("/create-payment-intent", async (req, res) => {
   }
 });
 
+// ---- Listen ----
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 
-});
 
 
 
