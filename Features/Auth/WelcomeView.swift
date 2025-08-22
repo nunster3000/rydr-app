@@ -2,8 +2,7 @@
 //  WelcomeView.swift
 //  RydrPlayground
 //
-//  Created by Khris Nunnally on 6/14/25.
-//
+
 import SwiftUI
 
 struct WelcomeView: View {
@@ -23,20 +22,19 @@ struct WelcomeView: View {
                     .bold()
                     .padding(.horizontal)
 
-                // Login Button
+                // Log In
                 NavigationLink(destination: LoginView()) {
                     Text("Log In")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(GradientButtonStyle())
 
-                // Sign Up Button
-                NavigationLink(destination: SignupCoordinator()) {
+                // Sign Up → use the existing SignupFlowView
+                NavigationLink(destination: SignupFlowView()) {
                     Text("Sign Up")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(GradientButtonStyle())
-
 
                 Spacer()
             }
@@ -49,3 +47,4 @@ struct WelcomeView: View {
     WelcomeView()
         .environmentObject(UserSessionManager())
 }
+

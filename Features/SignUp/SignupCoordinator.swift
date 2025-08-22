@@ -1,217 +1,221 @@
 //
 //  SignupCoordinator.swift
-//  RydrSignupFlow
+//  RydrPlayground
 //
+
+import Foundation
 import SwiftUI
-import PhotosUI
-import FirebaseFirestore
 import FirebaseAuth
+import FirebaseFirestore
 
-enum SignupStep: Hashable {
-    case nameEntry
-    case emailPassword
-    case addressEntry
-    case paymentMethod
-    case termsAndVerification
-    case done
-}
+@MainActor
+final class SignupCoordinator: ObservableObject {
 
-struct SignupCoordinator: View {
-    @EnvironmentObject private var session: UserSessionManager
+    enum Step {
+        case createAccount
+        case addressEntry
+        case done
+    }
 
-    @State private var path: [SignupStep] = []
+    // MARK: - Published UI state
+    @Published var step: Step = .createAccount
+    @Published var isLoading: Bool = false
+    @Published var errorMessage: String?
 
-    // Shared user data across steps
-    @State private var phoneNumber = ""
-    @State private var firstName = ""
-    @State private var lastName = ""
-    @State private var preferredName = ""
-    @State private var email = ""
-    @State private var password = ""
-    @State private var confirmPassword: String = ""
-    @State private var streetAddress = ""
-    @State private var addressLine2 = ""
-    @State private var city = ""
-    @State private var state = ""
-    @State private var zip = ""
-    @State private var agreedToTerms = false
-    @State private var isVerifiedUser = false
-    @State private var stateIDFront: PhotosPickerItem?
-    @State private var stateIDBack: PhotosPickerItem?
-    @State private var selfieImage: PhotosPickerItem?
+    // MARK: - Config
+    private let backendBase = URL(string: "https://rydr-stripe-backend.onrender.com")!
+    private let ridersCollection = "riders"   // change to "users" if your schema differs
 
-    // Navigate to main app
-    @State private var showMainApp = false
+    // MARK: - Entry point: Email/Password sign up
+    func signUp(email: String,
+                password: String,
+                firstName: String,
+                lastName: String,
+                preferredName: String?,
+                phoneNumber: String?) {
 
-    var body: some View {
-        NavigationStack(path: $path) {
-            // Your PhoneVerificationView should return a verified E.164 phone string
-            PhoneVerificationView { verifiedPhone in
-                phoneNumber = verifiedPhone
-                upsertRider([
-                    "phoneNumber": verifiedPhone,
-                    "createdAt": FieldValue.serverTimestamp()
-                ])
-                path.append(.nameEntry)
-            }
-            .navigationDestination(for: SignupStep.self) { step in
-                switch step {
+        isLoading = true
+        errorMessage = nil
 
-                case .nameEntry:
-                    NameEntryView(
-                        firstName: $firstName,
-                        lastName: $lastName,
-                        preferredName: $preferredName,
-                        onContinueWithForm: {
-                            upsertRider([
-                                "firstName": firstName,
-                                "lastName": lastName,
-                                "preferredName": preferredName
-                            ])
-                            path.append(.emailPassword)
-                        },
-                        onContinueWithSocial: {
-                            upsertRider([
-                                "firstName": firstName,
-                                "lastName": lastName,
-                                "preferredName": preferredName
-                            ])
-                            path.append(.addressEntry)
+        Auth.auth().createUser(withEmail: email, password: password) { [weak self] result, error in
+            guard let self else { return }
+
+            if let ns = error as NSError? {
+                // If email already exists, try to sign the user in and proceed
+                if ns.code == AuthErrorCode.emailAlreadyInUse.rawValue {
+                    Auth.auth().signIn(withEmail: email, password: password) { [weak self] signInResult, signErr in
+                        guard let self else { return }
+                        if let signErr {
+                            self.fail("Sign-in failed: \(signErr.localizedDescription)")
+                            return
                         }
-                    )
-
-                case .emailPassword:
-                    EmailAndPasswordView(
-                        email: $email,
-                        password: $password,
-                        confirmPassword: $confirmPassword,
-                        onNext: {
-                            Auth.auth().createUser(withEmail: email, password: password) { result, error in
-                                if let error = error as NSError? {
-                                    if error.code == AuthErrorCode.emailAlreadyInUse.rawValue {
-                                        // Dev‑friendly: continue flow and upsert email
-                                        upsertRider(["email": email])
-                                        path.append(.addressEntry)
-                                    } else {
-                                        print("❌ Firebase signup failed: \(error.localizedDescription)")
-                                    }
-                                    return
-                                }
-                                upsertRider([
-                                    "uid": result?.user.uid ?? "",
-                                    "email": email,
-                                    "firstName": firstName,
-                                    "lastName": lastName,
-                                    "preferredName": preferredName,
-                                    "phoneNumber": phoneNumber
-                                ])
-                                path.append(.addressEntry)
-                            }
+                        guard let user = signInResult?.user else {
+                            self.fail("Sign-in failed: missing user")
+                            return
                         }
-                    )
-
-                case .addressEntry:
-                    AddressInfoView(
-                        street: $streetAddress,
-                        addressLine2: $addressLine2,
-                        city: $city,
-                        state: $state,
-                        zipCode: $zip,
-                        onNext: {
-                            upsertRider([
-                                "address": [
-                                    "street": streetAddress,
-                                    "line2": addressLine2,
-                                    "city": city,
-                                    "state": state,
-                                    "zip": zip
-                                ]
-                            ])
-                            path.append(.paymentMethod)
-                        }
-                    )
-
-                case .paymentMethod:
-                    PaymentScreenView(
-                        onComplete: { path.append(.termsAndVerification) },
-                        onSkip:     { path.append(.termsAndVerification) }   // ✅ optional
-                    )
-
-                case .termsAndVerification:
-                    TermsAndVerificationView(
-                        termsAccepted: $agreedToTerms,
-                        wantsVerification: $isVerifiedUser,
-                        idFront: $stateIDFront,
-                        idBack: $stateIDBack,
-                        selfie: $selfieImage,
-                        onSubmit: {
-                            saveUserToFirestore()
-                        }
-                    )
-
-                case .done:
-                    EmptyView()
+                        self.finishAccountSetup(
+                            user: user,
+                            email: email,
+                            firstName: firstName,
+                            lastName: lastName,
+                            preferredName: preferredName,
+                            phoneNumber: phoneNumber
+                        )
+                    }
+                    return
+                } else {
+                    self.fail(ns.localizedDescription); return
                 }
             }
+
+            guard let user = result?.user else {
+                self.fail("Account creation failed: missing user"); return
+            }
+
+            // Set display name (non-blocking)
+            let change = user.createProfileChangeRequest()
+            change.displayName = [firstName, lastName].joined(separator: " ").trimmingCharacters(in: .whitespaces)
+            change.commitChanges(completion: nil)
+
+            self.finishAccountSetup(
+                user: user,
+                email: email,
+                firstName: firstName,
+                lastName: lastName,
+                preferredName: preferredName,
+                phoneNumber: phoneNumber
+            )
         }
-        .fullScreenCover(isPresented: $showMainApp) {
-            MainTabView()
-                .environmentObject(session)
+    }
+
+    // MARK: - Social sign-in ready
+    func handleSignedInUser(_ user: User,
+                            firstName: String? = nil,
+                            lastName: String? = nil,
+                            preferredName: String? = nil,
+                            phoneNumber: String? = nil) {
+        let email = user.email ?? ""
+        finishAccountSetup(
+            user: user,
+            email: email,
+            firstName: firstName ?? (user.displayName ?? "").components(separatedBy: " ").first ?? "",
+            lastName: lastName ?? (user.displayName ?? "").components(separatedBy: " ").dropFirst().joined(separator: " "),
+            preferredName: preferredName,
+            phoneNumber: phoneNumber
+        )
+    }
+
+    // MARK: - Internal: profile + Stripe provisioning
+    private func finishAccountSetup(user: User,
+                                    email: String,
+                                    firstName: String,
+                                    lastName: String,
+                                    preferredName: String?,
+                                    phoneNumber: String?) {
+
+        let uid = user.uid
+        var data: [String: Any] = [
+            "uid": uid,
+            "email": email,
+            "firstName": firstName,
+            "lastName": lastName,
+            "updatedAt": FieldValue.serverTimestamp()
+        ]
+        if let preferredName, !preferredName.isEmpty { data["preferredName"] = preferredName }
+        if let phoneNumber, !phoneNumber.isEmpty { data["phoneNumber"] = phoneNumber }
+
+        upsertRider(uid: uid, data: data) { [weak self] ok in
+            guard let self else { return }
+            // Provision Stripe customer (creates one even if they skip adding a card)
+            self.provisionStripeCustomerIfNeeded(for: user) {
+                // Advance to next step regardless (we self-heal later if needed)
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                    self.step = .addressEntry
+                }
+            }
         }
     }
 
     // MARK: - Firestore helpers
-
-    /// Merge‑writes into `riders/{uid}` so the document exists early and stays current.
-    private func upsertRider(_ fields: [String: Any]) {
-        guard let uid = Auth.auth().currentUser?.uid else { return }
-        Firestore.firestore()
-            .collection("riders").document(uid)
-            .setData(fields, merge: true) { err in
-                if let err = err { print("❌ upsertRider error: \(err)") }
-            }
+    private func upsertRider(uid: String,
+                             data: [String: Any],
+                             completion: @escaping (Bool) -> Void) {
+        let ref = Firestore.firestore().collection(ridersCollection).document(uid)
+        ref.setData(data, merge: true) { err in
+            if let err { print("⚠️ Firestore upsert rider failed:", err.localizedDescription); completion(false) }
+            else { completion(true) }
+        }
     }
 
-    /// Final save (still uses merge so it’s idempotent), then load profile & go to app.
-    private func saveUserToFirestore() {
-        guard let uid = Auth.auth().currentUser?.uid else {
-            print("❌ No authenticated user to save.")
-            return
-        }
+    // MARK: - Stripe customer provisioning
+    /// Ensures `riders/{uid}.stripeCustomerId` exists by calling your backend /create-customer.
+    /// Works even if the user has no card yet.
+    private func provisionStripeCustomerIfNeeded(for user: User,
+                                                 completion: @escaping () -> Void) {
+        let uid = user.uid
+        let doc = Firestore.firestore().collection(ridersCollection).document(uid)
 
-        let riderData: [String: Any] = [
-            "uid": uid,
-            "firstName": firstName,
-            "lastName": lastName,
-            "preferredName": preferredName,
-            "email": email,
-            "phoneNumber": phoneNumber,
-            "address": [
-                "street": streetAddress,
-                "line2": addressLine2,
-                "city": city,
-                "state": state,
-                "zip": zip
-            ],
-            "agreedToTerms": agreedToTerms,
-            "verifiedUser": isVerifiedUser,
-            "createdAt": FieldValue.serverTimestamp()
-        ]
+        doc.getDocument { [weak self] snap, _ in
+            guard let self else { completion(); return }
 
-        Firestore.firestore()
-            .collection("riders").document(uid)
-            .setData(riderData, merge: true) { error in
-                if let error = error {
-                    print("❌ Error saving rider: \(error.localizedDescription)")
-                } else {
-                    print("✅ Rider saved to Firestore.")
-                    // 🔁 Pull name/preferred so Profile greeting updates immediately
-                    session.loadUserProfile()
-                    showMainApp = true
-                }
+            if let cid = snap?.data()?["stripeCustomerId"] as? String, !cid.isEmpty {
+                print("✅ Stripe customer already provisioned:", cid)
+                completion(); return
             }
+
+            user.getIDToken { token, _ in
+                var req = URLRequest(url: self.backendBase.appendingPathComponent("create-customer"))
+                req.httpMethod = "POST"
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                // Optional: if you later secure the backend with Firebase Admin, send ID token:
+                if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+
+                let body: [String: Any] = [
+                    "email": user.email ?? "user-\(uid)@example.com",
+                    "name":  user.displayName ?? "Rydr User",
+                    "uid":   uid
+                ]
+                req.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
+
+                URLSession.shared.dataTask(with: req) { data, _, error in
+                    if let error {
+                        print("❌ /create-customer request failed:", error.localizedDescription)
+                        completion(); return
+                    }
+                    guard
+                        let data,
+                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                        let cid = json["customerId"] as? String
+                    else {
+                        print("❌ /create-customer invalid response")
+                        completion(); return
+                    }
+
+                    // Save for quick access later (non-blocking)
+                    doc.setData(["stripeCustomerId": cid, "updatedAt": FieldValue.serverTimestamp()],
+                                merge: true) { err in
+                        if let err {
+                            print("⚠️ Failed to persist stripeCustomerId:", err.localizedDescription)
+                        } else {
+                            print("✅ Provisioned Stripe customer:", cid)
+                        }
+                        completion()
+                    }
+                }.resume()
+            }
+        }
+    }
+
+    // MARK: - Error/UI helper
+    private func fail(_ message: String) {
+        DispatchQueue.main.async {
+            self.isLoading = false
+            self.errorMessage = message
+        }
     }
 }
+
 
 
 

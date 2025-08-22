@@ -1,8 +1,11 @@
 // index.js
+"use strict";
+
 const express = require("express");
 const cors = require("cors");
-const Stripe = require("stripe");
 const dotenv = require("dotenv");
+const Stripe = require("stripe");
+
 dotenv.config();
 
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -11,26 +14,22 @@ if (!process.env.STRIPE_SECRET_KEY) {
 }
 
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-// ---- CORS (optional) ----
+// --- CORS (optional; iOS native calls don't need it, web would) ---
 const allowed = (process.env.CORS_ORIGINS || "")
   .split(",").map(s => s.trim()).filter(Boolean);
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin || allowed.length === 0 || allowed.includes(origin)) return cb(null, true);
-      cb(new Error("Not allowed by CORS"));
-    },
-  })
-);
+app.use(cors({
+  origin: (origin, cb) =>
+    !origin || allowed.length === 0 || allowed.includes(origin)
+      ? cb(null, true)
+      : cb(new Error("Not allowed by CORS")),
+}));
 
-// ---- Health ----
+// --- Health ---
 app.get("/", (_req, res) => res.send("✅ Rydr Stripe backend is running"));
 
-// ---- Webhook (RAW body; must be mounted BEFORE express.json) ----
+// --- Webhook (RAW body; mount BEFORE json parser) ---
 app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
   const sig = req.headers["stripe-signature"];
   try {
@@ -42,13 +41,13 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
 
     switch (event.type) {
       case "setup_intent.succeeded":
-        console.log("💳 Setup succeeded:", event.data.object.id);
+        console.log("💳 setup_intent.succeeded:", event.data.object.id);
         break;
       case "payment_intent.succeeded":
-        console.log("💰 Payment succeeded:", event.data.object.id);
+        console.log("💰 payment_intent.succeeded:", event.data.object.id);
         break;
       case "payment_intent.payment_failed":
-        console.log("⚠️ Payment failed:", event.data.object.id);
+        console.log("⚠️ payment_intent.payment_failed:", event.data.object.id);
         break;
       default:
         console.log("ℹ️ Unhandled event:", event.type);
@@ -60,16 +59,16 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
   }
 });
 
-// ---- JSON parser for all other routes ----
+// --- JSON parser for all OTHER routes ---
 app.use(express.json());
 
-// ---- Create or get Customer ----
-// Body: { uid?: string, email?: string, name?: string } -> { customerId }
+// --- Create-or-get Customer (idempotent) ---
+// Body: { email?: string, name?: string, uid?: string } -> { customerId }
 app.post("/create-customer", async (req, res) => {
   try {
-    const { uid, email, name } = req.body || {};
+    const { email, name, uid } = req.body || {};
 
-    // 1) Prefer lookup by Firebase UID in metadata
+    // 1) Prefer lookup by metadata.firebase_uid (if provided)
     if (uid) {
       const byUid = await stripe.customers.search({
         query: `metadata['firebase_uid']:'${uid}'`,
@@ -79,77 +78,79 @@ app.post("/create-customer", async (req, res) => {
       }
     }
 
-    // 2) Fallback by email (if migrating older customers)
+    // 2) Fallback by email (if present)
     if (email) {
       const byEmail = await stripe.customers.search({ query: `email:'${email}'` });
       if (byEmail.data.length) {
-        if (uid) {
+        // Backfill UID so future lookups use metadata
+        if (uid && byEmail.data[0].metadata?.firebase_uid !== uid) {
           await stripe.customers.update(byEmail.data[0].id, {
-            metadata: { firebase_uid: uid },
+            metadata: { ...byEmail.data[0].metadata, firebase_uid: uid },
           });
         }
         return res.json({ customerId: byEmail.data[0].id });
       }
     }
 
-    // 3) Create new
+    // 3) Create new customer (email optional)
     const customer = await stripe.customers.create({
       email: email || undefined,
       name: name || undefined,
       metadata: uid ? { firebase_uid: uid } : undefined,
     });
-    res.json({ customerId: customer.id });
-  } catch (err) {
-    console.error("❌ create-customer:", err);
-    res.status(400).json({ error: err.message });
+    return res.json({ customerId: customer.id });
+  } catch (e) {
+    console.error("❌ create-customer:", e);
+    res.status(500).json({ error: "create_customer_failed" });
   }
 });
 
-// ---- Ephemeral Key ----
-// Headers: Stripe-Version; Body: { customerId }
+// --- Ephemeral Key ---
+// Headers: "Stripe-Version" required; Body: { customerId }
 app.post("/ephemeral-key", async (req, res) => {
   try {
     const { customerId } = req.body || {};
     const apiVer = req.headers["stripe-version"];
-    if (!customerId) throw new Error("customerId is required");
-    if (!apiVer) throw new Error("Missing Stripe-Version header");
+    if (!customerId) return res.status(400).json({ error: "customerId_required" });
+    if (!apiVer)    return res.status(400).json({ error: "stripe_version_required" });
 
     const key = await stripe.ephemeralKeys.create(
       { customer: customerId },
       { apiVersion: String(apiVer) }
     );
     res.json(key);
-  } catch (err) {
-    console.error("❌ ephemeral-key:", err);
-    res.status(400).json({ error: err.message });
+  } catch (e) {
+    console.error("❌ ephemeral-key:", e);
+    res.status(500).json({ error: "ephemeral_key_failed" });
   }
 });
 
-// ---- SetupIntent (save a card) ----
+// --- SetupIntent (save a card) ---
 // Body: { customerId } -> { clientSecret }
 app.post("/create-setup-intent", async (req, res) => {
   try {
     const { customerId } = req.body || {};
-    if (!customerId) throw new Error("customerId is required");
+    if (!customerId) return res.status(400).json({ error: "customerId_required" });
+
     const si = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ["card"],
       usage: "off_session",
     });
     res.json({ clientSecret: si.client_secret });
-  } catch (err) {
-    console.error("❌ create-setup-intent:", err);
-    res.status(400).json({ error: err.message });
+  } catch (e) {
+    console.error("❌ create-setup-intent:", e);
+    res.status(500).json({ error: "setup_intent_failed" });
   }
 });
 
-// ---- PaymentIntent (charge) ----
-// Body: { amount (cents), currency, customerId? } -> { clientSecret, paymentIntentId }
+// --- PaymentIntent (charge) ---
+// Body: { amount: <int cents>, currency: "usd", customerId?: "cus_..." }
 app.post("/create-payment-intent", async (req, res) => {
   try {
     const { amount, currency = "usd", customerId } = req.body || {};
     if (!Number.isInteger(amount) || amount <= 0) {
-      throw new Error("amount (integer cents) is required and must be > 0");
+      return res.status(400).json({ error: "invalid_amount" });
     }
     const pi = await stripe.paymentIntents.create({
       amount,
@@ -158,13 +159,13 @@ app.post("/create-payment-intent", async (req, res) => {
       automatic_payment_methods: { enabled: true },
     });
     res.json({ clientSecret: pi.client_secret, paymentIntentId: pi.id });
-  } catch (err) {
-    console.error("❌ create-payment-intent:", err);
-    res.status(400).json({ error: err.message });
+  } catch (e) {
+    console.error("❌ create-payment-intent:", e);
+    res.status(500).json({ error: "payment_intent_failed" });
   }
 });
 
-// ---- Listen ----
+// --- Listen ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 
