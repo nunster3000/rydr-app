@@ -76,7 +76,6 @@
 				SignUp/EmailAndPasswordView.swift,
 				SignUp/NameEntryView.swift,
 				SignUp/SignupCoordinator.swift,
-				SignUp/SignupFlowView.swift,
 				SignUp/TermsAndVerificationView.swift,
 			);
 			target = D9A571F12DF9C6AB00C04006 /* RydrPlaygroundTests */;
@@ -89,7 +88,6 @@
 				SignUp/EmailAndPasswordView.swift,
 				SignUp/NameEntryView.swift,
 				SignUp/SignupCoordinator.swift,
-				SignUp/SignupFlowView.swift,
 				SignUp/TermsAndVerificationView.swift,
 			);
 			target = D9A571FB2DF9C6AB00C04006 /* RydrPlaygroundUITests */;
