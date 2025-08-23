@@ -43,7 +43,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     #endif
 
     // ✅ Stripe publishable key (your provided test key)
-    StripeAPI.defaultPublishableKey = "pk_test_51RcVGsPdK3HOzC79wL6tFq0EDuB9vtE1Yl2faUdj1Br15hrtAvB3oWNJTbTSNIj97jLGYrV0z9uZwiupE4cLhyk500xfc9MLm5"
+    StripeAPI.defaultPublishableKey = "pk_test_51RcVGmBOkTOLtDHQgAvZmOvsvTxIqlcD3zLFgpkWD5pCQawjrFRBV3SjufrmGRb15GjVA7i351P1zfF7vbZ2J5gc00VuR0AYPc"
     print("💳 Stripe PK set")
 
     return true
