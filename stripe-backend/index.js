@@ -165,9 +165,74 @@ app.post("/create-payment-intent", async (req, res) => {
   }
 });
 
+// --- List saved card PaymentMethods (for wallet tiles) ---
+// Body: { customerId } -> { paymentMethods: [{id,brand,last4,expMonth,expYear,isDefault}] }
+app.post("/list-payment-methods", async (req, res) => {
+  try {
+    const { customerId } = req.body || {};
+    if (!customerId) return res.status(400).json({ error: "customerId_required" });
+
+    const [pms, customer] = await Promise.all([
+      stripe.paymentMethods.list({ customer: customerId, type: "card" }),
+      stripe.customers.retrieve(customerId),
+    ]);
+
+    const defaultPm = customer?.invoice_settings?.default_payment_method || null;
+
+    res.json({
+      paymentMethods: pms.data.map(pm => ({
+        id: pm.id,
+        brand: pm.card.brand,
+        last4: pm.card.last4,
+        expMonth: pm.card.exp_month,
+        expYear: pm.card.exp_year,
+        isDefault: pm.id === defaultPm,
+      })),
+    });
+  } catch (e) {
+    console.error("❌ list-payment-methods:", e);
+    res.status(500).json({ error: "list_failed" });
+  }
+});
+
+// --- Set default card ---
+// Body: { customerId, paymentMethodId } -> { ok: true }
+app.post("/set-default-payment-method", async (req, res) => {
+  try {
+    const { customerId, paymentMethodId } = req.body || {};
+    if (!customerId || !paymentMethodId)
+      return res.status(400).json({ error: "required_params" });
+
+    await stripe.customers.update(customerId, {
+      invoice_settings: { default_payment_method: paymentMethodId },
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ set-default-payment-method:", e);
+    res.status(500).json({ error: "update_failed" });
+  }
+});
+
+// --- Detach a card ---
+// Body: { paymentMethodId } -> { ok: true }
+app.post("/detach-payment-method", async (req, res) => {
+  try {
+    const { paymentMethodId } = req.body || {};
+    if (!paymentMethodId)
+      return res.status(400).json({ error: "paymentMethodId_required" });
+
+    await stripe.paymentMethods.detach(paymentMethodId);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ detach-payment-method:", e);
+    res.status(500).json({ error: "detach_failed" });
+  }
+});
+
 // --- Listen ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
 
 
 
