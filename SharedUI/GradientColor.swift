@@ -14,3 +14,21 @@ struct Styles {
     )
 }
 
+struct RydrProminentButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(Styles.rydrGradient)
+            .overlay {
+                if configuration.isPressed {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black.opacity(0.08))
+                }
+            }
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
