@@ -7,6 +7,8 @@
 import SwiftUI
 
 struct MainTabView: View {
+    @StateObject private var rideManager = RideManager()   // ✅ provide once here
+
     var body: some View {
         TabView {
 
@@ -28,7 +30,7 @@ struct MainTabView: View {
                 Text("Profile")
             }
 
-            // RydrBank (uses your real view from its own file)
+            // RydrBank
             NavigationStack {
                 RydrBankView()
             }
@@ -37,9 +39,9 @@ struct MainTabView: View {
                 Text("RydrBank")
             }
 
-            // Activity / History (keep the icon, unique placeholder name)
+            // Activity / History
             NavigationStack {
-                RideHistoryShortcutView()
+                RideHistoryView()                 // ✅ real view
                     .navigationTitle("Activity")
             }
             .tabItem {
@@ -48,22 +50,10 @@ struct MainTabView: View {
             }
         }
         .accentColor(.red)
+        .environmentObject(rideManager)             // ✅ inject to all tabs
     }
 }
 
-// MARK: - Unique placeholder (keeps your “Activity” shortcut)
-struct RideHistoryShortcutView: View {
-    var body: some View {
-        Text("Your Ride History (coming soon)")
-            .font(.title)
-            .padding()
-    }
-}
-
-#Preview {
-    MainTabView()
-        .environmentObject(UserSessionManager())
-}
 
 
 

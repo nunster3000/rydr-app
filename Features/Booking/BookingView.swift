@@ -1,436 +1,640 @@
-//
-//  ContentView.swift
-//  RydrPlayground
-//
-//  Created by Khris Nunnally on 6/11/25.
-//
-//
-//  BookingView.swift
-//  RydrPlayground
-//
-//  Created by Khris Nunnally on 6/11/25.
-//
 import SwiftUI
 import MapKit
 import _MapKit_SwiftUI
 import CoreLocation
-import FirebaseAuth
-import FirebaseFirestore
 
-struct Shortcut: Identifiable {
-    let id = UUID()
-    let label: String
-    var value: String?
-    let icon: String
+// MARK: - Async location fetcher (non-blocking; avoids analyzer warning)
+final class LocationFetcher: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    var onUpdate: ((CLLocationCoordinate2D) -> Void)?
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    }
+
+    func start() {
+        Task.detached {
+            let enabled = CLLocationManager.locationServicesEnabled()
+            await MainActor.run {
+                guard enabled else { return }
+                switch self.manager.authorizationStatus {
+                case .notDetermined: self.manager.requestWhenInUseAuthorization()
+                case .authorizedWhenInUse, .authorizedAlways: self.manager.requestLocation()
+                default: break
+                }
+            }
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        if manager.authorizationStatus == .authorizedWhenInUse || manager.authorizationStatus == .authorizedAlways {
+            manager.requestLocation()
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let coord = locations.first?.coordinate { onUpdate?(coord) }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 }
 
 struct BookingView: View {
-    var rideType: String
-    var userName: String
-    
-    @StateObject private var locationManager = LocationManager()
-    @StateObject private var userViewModel = UserViewModel()
-    @StateObject private var pickupSearch = LocationSearchService()
-    @StateObject private var dropoffSearch = LocationSearchService()
-    @StateObject private var shortcutSearch = LocationSearchService()
-    
-    @FocusState private var pickupFocused: Bool
-    @FocusState private var dropoffFocused: Bool
-    
-    @State private var pickupLocation = ""
-    @State private var dropOffLocation = ""
-    @State private var showDriverSelection = false
-    @State private var selectedDriver: Driver?
-    @State private var showingShortcutInput: Shortcut?
-    @State private var showingShortcutOptions: Shortcut?
-    @State private var recentAddresses: [String] = []
-    
-    @State private var cameraPosition = MapCameraPosition.region(
-        MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 33.6407, longitude: -84.4277),
-                           span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))
+    // Inputs
+    let rideType: String
+    let userName: String
+
+    // 🔹 Ride flow
+    @EnvironmentObject var rideManager: RideManager
+    @State private var showDriverSheet = false
+    @State private var showInProgress = false
+
+    // Map / region
+    @State private var region = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 33.7490, longitude: -84.3880),
+        span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
     )
-    
-    @State private var bottomSheetOffset: CGFloat = 0
-    @GestureState private var dragOffset: CGFloat = 0
-    
-    @State private var nearbyDrivers: [Driver] = [
-        Driver(id: "1", name: "Alex", profileImage: "driver1", carImage: "car1", rating: 4.8, perMinute: 0.5, perMile: 1.2, driverScore: 88),
-        Driver(id: "2", name: "Jamie", profileImage: "driver2", carImage: "car2", rating: 4.5, perMinute: 0.6, perMile: 1.1, driverScore: 72),
-        Driver(id: "3", name: "Morgan", profileImage: "driver3", carImage: "driver3", rating: 4.9, perMinute: 0.4, perMile: 1.3, driverScore: 94)
-    ]
-    
-    @State private var showRideInProgress = false
+    @StateObject private var locationFetcher = LocationFetcher()
+
+    // Fields
+    @State private var pickupText = ""
+    @State private var dropoffText = ""
+    @FocusState private var focusedField: Field?
+    private enum Field { case pickup, dropoff, shortcut }
+
+    // Search completers
+    @StateObject private var pickupCompleter  = SearchCompleter()
+    @StateObject private var dropoffCompleter = SearchCompleter()
+    @StateObject private var shortcutCompleter = SearchCompleter()
+
+    // Slider (mid-open on appear; snaps top/mid/bottom)
+    @State private var sliderOffset: CGFloat = 0
+    @State private var sliderMinY: CGFloat = 0
+    @State private var sliderMaxY: CGFloat = 0
+    @State private var dragBaseline: CGFloat = 0
+    @State private var didSetInitialOffset = false
+
+    // Promo code
+    @State private var showPromo = false
+    @State private var promoCode = ""
+
+    // Promo Application
+    private enum PromoStatus: Equatable {
+        case idle
+        case applying
+        case success(String)
+        case failure(String)
+    }
+    @State private var promoStatus: PromoStatus = .idle
+    private var isApplyingPromo: Bool { if case .applying = promoStatus { return true } else { return false } }
+    private var isPromoApplied: Bool { if case .success = promoStatus { return true } else { return false } }
+
+    // Shortcuts (Work / Home / Add)
+    struct Shortcut: Identifiable {
+        let id = UUID()
+        var kind: Kind
+        var address: String
+        enum Kind: String { case work = "Work", home = "Home", custom = "Add" }
+        var label: String { kind.rawValue }
+        var icon: String {
+            switch kind { case .work: "briefcase.fill"; case .home: "house.fill"; case .custom: "plus" }
+        }
+        var tint: Color {
+            switch kind { case .work: .blue; case .home: .teal; case .custom: .gray }
+        }
+    }
     @State private var shortcuts: [Shortcut] = [
-        Shortcut(label: "Home", value: nil, icon: "house.fill"),
-        Shortcut(label: "Work", value: nil, icon: "briefcase.fill"),
-        Shortcut(label: "Custom", value: nil, icon: "mappin.and.ellipse")
+        .init(kind: .work,  address: ""),
+        .init(kind: .home,  address: ""),
+        .init(kind: .custom,address: "")
     ]
-    
-    // MARK: - Promo (RydrBank) state
-    @State private var promoInput: String = ""
-    @State private var appliedPromoCode: String? = nil
-    @State private var promoMessage: String? = nil
-    @State private var isApplyingPromo = false
-    
+    @State private var editingShortcutID: Shortcut.ID? = nil
+    @State private var newShortcutAddress = ""
+    @FocusState private var shortcutFocused: Bool
+
+    // Recents (persisted list of drop-offs)
+    @AppStorage("recentDropoffsData") private var recentDropoffsData: Data?
+    @State private var recentDropoffs: [String] = []   // newest first
+
     var body: some View {
-        ZStack {
-            Map(position: $cameraPosition) {
-                UserAnnotation()
+        GeometryReader { geo in
+            ZStack {
+                // Map as background
+                Map(initialPosition: .region(region)) { UserAnnotation() }
+                    .ignoresSafeArea()
+                    .onAppear {
+                        // async location update
+                        locationFetcher.onUpdate = { coord in
+                            let start = MKCoordinateRegion(
+                                center: coord,
+                                span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
+                            )
+                            region = start
+                            pickupCompleter.setRegion(start)
+                            dropoffCompleter.setRegion(start)
+                            shortcutCompleter.setRegion(start)
+                        }
+                        locationFetcher.start()
+
+                        // slider snap points & initial position
+                        sliderMinY = 0
+                        sliderMaxY = max(0, geo.size.height * 0.58)
+                        if !didSetInitialOffset {
+                            sliderOffset = (sliderMaxY * 0.5) // MIDWAY on open
+                            didSetInitialOffset = true
+                        }
+
+                        // load recents
+                        recentDropoffs = decodeRecents(from: recentDropoffsData)
+                    }
+
+                // Slider panel
+                slider
+                    .offset(y: sliderOffset)
+                    .animation(.interactiveSpring(), value: sliderOffset)
+                    .contentShape(Rectangle())            // make whole surface draggable
+                    .highPriorityGesture(sheetDrag)       // <- key: sheet drag beats ScrollView
             }
-            .mapControls { MapUserLocationButton() }
-            .ignoresSafeArea()
-            
-            VStack {
-                Spacer()
-                
-                VStack(spacing: 20) {
-                    Capsule()
-                        .frame(width: 40, height: 6)
-                        .foregroundColor(.gray.opacity(0.4))
-                    
-                    Text("Ready to ride, \(userViewModel.userName)?")
-                        .font(.headline)
-                    
-                    // Shortcuts
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 16) {
-                            ForEach(shortcuts.indices, id: \.self) { index in
-                                let shortcut = shortcuts[index]
-                                ShortcutButton(
-                                    label: shortcut.label,
-                                    icon: shortcut.icon,
-                                    tapAction: {
-                                        if shortcut.value == nil {
-                                            showingShortcutInput = shortcuts[index]
-                                        } else {
-                                            if pickupLocation.isEmpty {
-                                                pickupLocation = shortcut.value!
-                                                pickupSearch.queryFragment = shortcut.value!
-                                            } else if dropOffLocation.isEmpty {
-                                                dropOffLocation = shortcut.value!
-                                                dropoffSearch.queryFragment = shortcut.value!
-                                            }
-                                        }
-                                    },
-                                    longPressAction: {
-                                        showingShortcutOptions = shortcuts[index]
+        }
+        // 🔹 Present driver selection (RideManager-powered)
+        .sheet(isPresented: $showDriverSheet) {
+            DriverSelectionView(
+                rideManager: rideManager,
+                rideType: rideType,
+                pickup: pickupText,
+                dropoff: dropoffText,
+                region: region,
+                onAccepted: {
+                    showDriverSheet = false
+                    showInProgress = true
+                },
+                onClose: { showDriverSheet = false }
+            )
+        }
+        // 🔹 Present in-progress view
+        .fullScreenCover(isPresented: $showInProgress) {
+            RideInProgressView(rideManager: rideManager)
+        }
+        .navigationBarBackButtonHidden(false)
+    }
+
+    // MARK: - High priority drag for snapping panel
+    private var sheetDrag: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                if value.translation == .zero { dragBaseline = sliderOffset }
+                let proposed = dragBaseline + value.translation.height
+                sliderOffset = min(max(sliderMinY, proposed), sliderMaxY)
+            }
+            .onEnded { _ in
+                // snap to top / middle / bottom
+                let anchors: [CGFloat] = [sliderMinY, (sliderMaxY * 0.5), sliderMaxY]
+                sliderOffset = anchors.min(by: { abs($0 - sliderOffset) < abs($1 - sliderOffset) }) ?? sliderOffset
+            }
+    }
+
+    // MARK: - Slider content (structured like Apple Maps panel)
+    private var slider: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 14) {
+                // Grabber
+                Capsule().frame(width: 40, height: 5)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 8)
+
+                // Search card (extracted to keep type-checker happy)
+                searchCard
+
+                // ── Library (Work / Home / Add) ────────────────────────────────
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Shortcuts").font(.headline)
+                    HStack(spacing: 14) {
+                        ForEach(shortcuts) { sc in
+                            VStack(spacing: 6) {
+                                Button {
+                                    if sc.address.isEmpty {
+                                        editingShortcutID = sc.id
+                                        newShortcutAddress = ""
+                                        shortcutFocused = true
+                                    } else {
+                                        if pickupText.isEmpty { pickupText = sc.address } else { dropoffText = sc.address }
+                                        focusedField = nil
+                                    }
+                                } label: {
+                                    ZStack {
+                                        Circle().fill(sc.tint.opacity(0.18)).frame(width: 58, height: 58)
+                                        Image(systemName: sc.icon)
+                                            .font(.title2.weight(.semibold))
+                                            .foregroundStyle(sc.tint)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .simultaneousGesture(
+                                    LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                                        editingShortcutID = sc.id
+                                        newShortcutAddress = sc.address
+                                        shortcutFocused = true
+                                        shortcutCompleter.setQuery(newShortcutAddress)
                                     }
                                 )
+
+                                Text(sc.label).font(.subheadline).foregroundColor(.primary.opacity(0.95))
                             }
-                        }
-                        .padding(.horizontal)
-                    }
-                    
-                    // Address fields + recents
-                    VStack(alignment: .leading, spacing: 10) {
-                        TextField("Enter Pickup Location", text: $pickupSearch.queryFragment)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($pickupFocused)
-                        
-                        if pickupFocused && !pickupSearch.suggestions.isEmpty {
-                            List(pickupSearch.suggestions, id: \.self) { suggestion in
-                                Button(action: {
-                                    resolveAddress(suggestion) { resolved in
-                                        pickupLocation = resolved
-                                        pickupSearch.queryFragment = resolved
-                                        pickupFocused = false
-                                    }
-                                }) {
-                                    Text(suggestion.title + ", " + suggestion.subtitle)
-                                }
-                            }
-                            .frame(maxHeight: 150)
-                        }
-                        
-                        Button("Use Current Location") {
-                            if let location = locationManager.currentLocation {
-                                let coordinate = location.coordinate
-                                locationManager.getAddress(for: coordinate) { address in
-                                    pickupLocation = address ?? "Current Location"
-                                    pickupSearch.queryFragment = pickupLocation
-                                    cameraPosition = .region(MKCoordinateRegion(center: coordinate,
-                                                                                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
-                                }
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                        
-                        TextField("Enter Drop-off Location", text: $dropoffSearch.queryFragment)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($dropoffFocused)
-                        
-                        if dropoffFocused && !dropoffSearch.suggestions.isEmpty {
-                            List(dropoffSearch.suggestions, id: \.self) { suggestion in
-                                Button(action: {
-                                    resolveAddress(suggestion) { resolved in
-                                        dropOffLocation = resolved
-                                        dropoffSearch.queryFragment = resolved
-                                        addToRecents(resolved)
-                                        dropoffFocused = false
-                                    }
-                                }) {
-                                    Text(suggestion.title + ", " + suggestion.subtitle)
-                                }
-                            }
-                            .frame(maxHeight: 150)
-                        }
-                        
-                        if !recentAddresses.isEmpty {
-                            VStack(alignment: .leading) {
-                                Text("Recents")
-                                    .font(.subheadline).bold()
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack {
-                                        ForEach(recentAddresses.prefix(5), id: \.self) { address in
-                                            Button(address) {
-                                                dropOffLocation = address
-                                                dropoffSearch.queryFragment = address
-                                            }
-                                            .padding(8)
-                                            .background(Color.gray.opacity(0.1))
-                                            .cornerRadius(8)
-                                        }
-                                    }
-                                }
-                                Button("View More") { }
-                                    .font(.caption)
-                            }
-                        }
-                        
-                        HStack {
-                            Image(systemName: "car.fill").foregroundColor(.red)
-                            Text(rideType).bold()
                         }
                     }
-                    .padding(.horizontal)
-                    
-                    // MARK: - Promo code section
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Have a promo?")
-                                .font(.subheadline).bold()
-                            if let applied = appliedPromoCode {
-                                Text("• Applied: \(applied)")
-                                    .font(.footnote)
-                                    .foregroundColor(.green)
-                            }
-                            Spacer()
-                        }
-                        
+
+                    if let editingID = editingShortcutID,
+                       let sc = shortcuts.first(where: { $0.id == editingID }) {
                         HStack(spacing: 8) {
-                            TextField("Enter code", text: $promoInput)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .textFieldStyle(.roundedBorder)
-                            
-                            if appliedPromoCode == nil {
+                            bookingField(
+                                title: sc.address.isEmpty ? "Add \(sc.label) address" : "Edit \(sc.label) address",
+                                text: Binding(
+                                    get: { newShortcutAddress },
+                                    set: { newValue in
+                                        newShortcutAddress = newValue
+                                        shortcutCompleter.setRegion(region)
+                                        shortcutCompleter.setQuery(newValue)
+                                    }),
+                                icon: "location.magnifyingglass",
+                                onIconTap: {
+                                    shortcutFocused = true
+                                    shortcutCompleter.setRegion(region)
+                                    shortcutCompleter.setQuery(newShortcutAddress)
+                                }
+                            )
+                            .focused($shortcutFocused)
+
+                            Button {
+                                if let idx = shortcuts.firstIndex(where: { $0.id == sc.id }),
+                                   !newShortcutAddress.trimmingCharacters(in: .whitespaces).isEmpty {
+                                    shortcuts[idx].address = newShortcutAddress
+                                }
+                                newShortcutAddress = ""
+                                editingShortcutID = nil
+                                shortcutFocused = false
+                            } label: { Image(systemName: "checkmark.circle.fill").font(.title3) }
+
+                            Button {
+                                newShortcutAddress = ""
+                                editingShortcutID = nil
+                                shortcutFocused = false
+                            } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
+                        }
+                        .overlay(alignment: .bottomLeading) {
+                            if shortcutFocused && !newShortcutAddress.isEmpty {
+                                compactSuggestions(for: shortcutCompleter) { suggestion in
+                                    newShortcutAddress = suggestion
+                                    shortcutFocused = false
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.06), lineWidth: 1))
+
+                // ── Recents ────────────────────────────────────────────────────
+                if !recentDropoffs.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack { Text("Recents").font(.headline); Spacer() }
+                        VStack(spacing: 8) {
+                            ForEach(recentDropoffs.prefix(5), id: \.self) { addr in
                                 Button {
-                                    Task { await applyPromo() }
+                                    dropoffText = addr; focusedField = nil
                                 } label: {
-                                    if isApplyingPromo {
-                                        ProgressView()
-                                    } else {
-                                        Text("Apply")
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "mappin.circle.fill").font(.title3).foregroundStyle(Color.red)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(addr).lineLimit(1).foregroundColor(.primary)
+                                            if let city = addr.split(separator: ",").dropFirst().first {
+                                                Text(city.trimmingCharacters(in: .whitespaces))
+                                                    .font(.caption).foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Spacer()
                                     }
+                                    .padding(10)
+                                    .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.06), lineWidth: 1))
                                 }
-                                .disabled(promoInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isApplyingPromo)
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.06), lineWidth: 1))
+                }
+
+                // ── Promo + Request button ─────────────────────────────────────
+                promoView
+
+                Button { requestRide() } label: {
+                    Text("Request \(rideType)").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(GradientButtonStyle())
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+        }
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .scrollDismissesKeyboard(.immediately)
+        .onChange(of: focusedField) { _, newValue in
+            if newValue == .pickup || newValue == .dropoff {
+                withAnimation(.spring()) { sliderOffset = sliderMinY }
+            }
+        }
+    }
+
+    // MARK: - Small, self-contained search card
+    @ViewBuilder
+    private var searchCard: some View {
+        let showPickupSuggestions = (focusedField == .pickup && !pickupText.isEmpty)
+        let showDropoffSuggestions = (focusedField == .dropoff && !dropoffText.isEmpty)
+
+        VStack(spacing: 8) {
+            // Pickup
+            bookingField(title: "Pickup", text: $pickupText, icon: "mappin.and.ellipse")
+                .focused($focusedField, equals: .pickup)
+                .onChange(of: pickupText) { _, new in
+                    pickupCompleter.setRegion(region); pickupCompleter.setQuery(new)
+                }
+            if showPickupSuggestions {
+                suggestionsList(for: pickupCompleter) { selection in
+                    pickupText = selection; focusedField = nil
+                }
+            }
+
+            // Dropoff
+            bookingField(title: "Dropoff", text: $dropoffText, icon: "flag.checkered")
+                .focused($focusedField, equals: .dropoff)
+                .onChange(of: dropoffText) { _, new in
+                    dropoffCompleter.setRegion(region); dropoffCompleter.setQuery(new)
+                }
+                .overlay(alignment: .trailing) {
+                    if !dropoffText.isEmpty {
+                        Button {
+                            dropoffText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.trailing, 10)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            if showDropoffSuggestions {
+                suggestionsList(for: dropoffCompleter) { selection in
+                    dropoffText = selection; focusedField = nil
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.06), lineWidth: 1))
+    }
+
+    // MARK: - Reusable field (icon optionally tappable)
+    @ViewBuilder
+    private func bookingField(
+        title: String,
+        text: Binding<String>,
+        icon: String,
+        onIconTap: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .onTapGesture { onIconTap?() }
+
+            TextField(title, text: text)
+                .textInputAutocapitalization(.words)
+                .disableAutocorrection(true)
+                .textContentType(.fullStreetAddress)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.thinMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.06), lineWidth: 1))
+    }
+
+    // MARK: - Suggestions (inline, full-width)
+    @ViewBuilder
+    private func suggestionsList(
+        for completer: SearchCompleter,
+        onPick: @escaping (String) -> Void
+    ) -> some View {
+        let items = Array(completer.results.prefix(10))
+        if !items.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(items.indices, id: \.self) { i in
+                        let item = items[i]
+                        Button {
+                            onPick(item.title + (item.subtitle.isEmpty ? "" : ", " + item.subtitle))
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title).font(.subheadline).foregroundColor(.primary)
+                                if !item.subtitle.isEmpty {
+                                    Text(item.subtitle).font(.caption).foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        if i < items.count - 1 { Divider() }
+                    }
+                }
+                .padding(10)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(maxHeight: 240)
+            .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        }
+    }
+
+    // Compact suggestions used under the inline Library editor
+    private func compactSuggestions(
+        for completer: SearchCompleter,
+        onPick: @escaping (String) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(completer.results.prefix(5)).indices, id: \.self) { i in
+                let item = completer.results[i]
+                Button {
+                    onPick(item.title + (item.subtitle.isEmpty ? "" : ", " + item.subtitle))
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title).font(.subheadline).foregroundColor(.primary)
+                        if !item.subtitle.isEmpty {
+                            Text(item.subtitle).font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                if i < 4 { Divider() }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(.thinMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .padding(.top, 6)
+    }
+
+    // MARK: - Promo
+    private var promoView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.spring()) { showPromo.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.circle")
+                    Text("Add promo code")
+                    Spacer()
+                }
+                .font(.subheadline)
+            }
+
+            if showPromo {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        TextField("Enter promo code", text: $promoCode)
+                            .textInputAutocapitalization(.never)
+                            .disableAutocorrection(true)
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.06), lineWidth: 1))
+                            .disabled(isApplyingPromo || isPromoApplied)
+
+                        Button(action: applyPromo) {
+                            if isApplyingPromo {
+                                ProgressView().controlSize(.small)
                             } else {
-                                Button("Clear") {
-                                    Task { await clearPromo() }
-                                }
-                                .foregroundColor(.red)
+                                Text(isPromoApplied ? "Applied" : "Apply").bold()
                             }
                         }
-                        
-                        if let msg = promoMessage {
-                            Text(msg)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            promoCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || isApplyingPromo
+                            || isPromoApplied
+                        )
+                    }
+
+                    // Notice banner
+                    Group {
+                        switch promoStatus {
+                        case .success(let msg):
+                            promoBanner(text: msg, isSuccess: true)
+                        case .failure(let msg):
+                            promoBanner(text: msg, isSuccess: false)
+                        default:
+                            EmptyView()
                         }
                     }
-                    .padding(.horizontal)
-                    
-                    Button(action: {
-                        showDriverSelection = true
-                    }) {
-                        Text("Book Ride")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red)
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                    }
-                    .padding(.horizontal)
-                }
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(20)
-                .shadow(radius: 5)
-                .offset(y: max(0, bottomSheetOffset + dragOffset))
-                .gesture(
-                    DragGesture()
-                        .updating($dragOffset) { value, state, _ in state = value.translation.height }
-                        .onEnded { value in
-                            let threshold: CGFloat = 150
-                            bottomSheetOffset = value.translation.height > threshold ? 300 : 0
-                        }
-                )
-            }
-        }
-        .actionSheet(item: $showingShortcutOptions) { shortcut in
-            ActionSheet(title: Text("Edit \(shortcut.label)"), buttons: [
-                .default(Text("Edit Details")) { showingShortcutInput = shortcut },
-                .cancel()
-            ])
-        }
-        .sheet(item: $showingShortcutInput) { shortcut in
-            VStack(spacing: 16) {
-                Text("Set address for \(shortcut.label)")
-                    .font(.headline)
-                TextField("Search address", text: $shortcutSearch.queryFragment)
-                    .textFieldStyle(.roundedBorder)
-                    .padding()
-                if !shortcutSearch.suggestions.isEmpty {
-                    List(shortcutSearch.suggestions, id: \.self) { suggestion in
-                        Button(action: {
-                            resolveAddress(suggestion) { resolved in
-                                if let index = shortcuts.firstIndex(where: { $0.label == shortcut.label }) {
-                                    shortcuts[index].value = resolved
-                                }
-                                shortcutSearch.queryFragment = ""
-                                showingShortcutInput = nil
-                            }
-                        }) {
-                            Text(suggestion.title + ", " + suggestion.subtitle)
-                        }
-                    }
-                    .frame(maxHeight: 150)
-                }
-                Button("Cancel") { showingShortcutInput = nil }
-                    .padding()
-            }
-            .padding()
-        }
-        .onAppear {
-            locationManager.requestLocation()
-            if let location = locationManager.currentLocation {
-                pickupSearch.updateRegion(location.coordinate)
-                dropoffSearch.updateRegion(location.coordinate)
-                shortcutSearch.updateRegion(location.coordinate)
-            }
-        }
-        .fullScreenCover(isPresented: $showDriverSelection) {
-            DriverSelectionView(
-                drivers: nearbyDrivers,
-                onConfirm: { driver in
-                    selectedDriver = driver
-                    showDriverSelection = false
-                    // If you want, you can re-preview the promo here against chosen driver’s tier.
-                    showRideInProgress = true
-                }
-            )
-        }
-        .fullScreenCover(isPresented: $showRideInProgress) {
-            if let driver = selectedDriver {
-                RideInProgressView(driver: driver)
-            }
-        }
-    }
-    
-    // MARK: - Helpers
-    
-    private func resolveAddress(_ suggestion: MKLocalSearchCompletion, completion: @escaping (String) -> Void) {
-        let request = MKLocalSearch.Request(completion: suggestion)
-        MKLocalSearch(request: request).start { response, _ in
-            if let coordinate = response?.mapItems.first?.placemark.coordinate {
-                locationManager.getAddress(for: coordinate) { address in
-                    completion(address ?? "\(coordinate.latitude), \(coordinate.longitude)")
-                    cameraPosition = .region(MKCoordinateRegion(center: coordinate,
-                                                                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
     }
-    
-    private func addToRecents(_ address: String) {
-        if !recentAddresses.contains(address) {
-            recentAddresses.insert(address, at: 0)
-            if recentAddresses.count > 15 { recentAddresses.removeLast() }
+
+    @ViewBuilder
+    private func promoBanner(text: String, isSuccess: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(isSuccess ? Color.green : Color.orange)
+            Text(text).font(.footnote)
+            Spacer()
         }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.thinMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
     }
-    
-    // MARK: - Promo API calls
-    
-    /// Validate + reserve the promo. Server should mark code "reserved" for this user.
-    private func applyPromo() async {
-        let code = promoInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !code.isEmpty else { return }
-        isApplyingPromo = true
-        promoMessage = nil
-        do {
-            // Optional: pass a real booking id if you have one
-            let resp = try await RydrBankAPI.preview(code: code, bookingId: "bk_preview_ios")
-            if let ok = resp["ok"] as? Bool, ok == true {
-                appliedPromoCode = code
-                promoMessage = (resp["message"] as? String) ?? "RydrBank applied."
-            } else if let err = resp["error"] as? String {
-                appliedPromoCode = nil
-                promoMessage = err
+
+    private func applyPromo() {
+        let code = promoCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !code.isEmpty else {
+            showStatus(.failure("Enter a promo code."))
+            return
+        }
+
+        promoStatus = .applying
+
+        // Simulate lightweight validation (replace with real API when ready)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            if isLikelyValidPromo(code) {
+                // persist for RideManager to read when pricing
+                UserDefaults.standard.set(code, forKey: "appliedPromoCode")
+                showStatus(.success("Promo applied."))
             } else {
-                appliedPromoCode = nil
-                promoMessage = "Could not apply code."
+                showStatus(.failure("That code is not valid."))
             }
-        } catch {
-            appliedPromoCode = nil
-            promoMessage = error.localizedDescription
         }
-        isApplyingPromo = false
     }
-    
-    /// Release reservation (if any) when the user clears the promo or backs out.
-    private func clearPromo() async {
-        // If a code was applied/reserved, tell the backend to release it
-        if let current = appliedPromoCode {
-            do {
-                try await RydrBankAPI.release(code: current)
-            } catch {
-                // Non-blocking: even if the network fails, clear the UI locally
-                print("Release failed:", error.localizedDescription)
-            }
-        }
-        appliedPromoCode = nil
-        promoInput = ""
-        promoMessage = nil
+
+    private func isLikelyValidPromo(_ code: String) -> Bool {
+        // Accepts formats like "RB-EXZS-UP98" (2 letters, dash, 2+ chars, dash, 2+ chars)
+        let pattern = #"^[A-Z]{2}-[A-Z0-9]{2,}-[A-Z0-9]{2,}$"#
+        return code.range(of: pattern, options: .regularExpression) != nil
     }
-    
-    
-    struct ShortcutButton: View {
-        let label: String
-        let icon: String
-        let tapAction: () -> Void
-        let longPressAction: () -> Void
-        
-        var body: some View {
-            Button(action: tapAction) {
-                VStack(spacing: 4) {
-                    Image(systemName: icon)
-                        .resizable()
-                        .frame(width: 24, height: 24)
-                    Text(label)
-                        .font(.caption2)
-                }
-                .padding(8)
-                .frame(width: 70, height: 70)
-                .background(Color.white)
-                .cornerRadius(10)
-            }
-            .simultaneousGesture(
-                LongPressGesture().onEnded { _ in longPressAction() }
-            )
+
+    private func showStatus(_ status: PromoStatus) {
+        withAnimation(.spring()) { promoStatus = status }
+        // Auto-dismiss the banner after a short moment
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation(.easeOut) { promoStatus = .idle }
         }
+    }
+
+    // MARK: - Recents persistence
+    private func decodeRecents(from data: Data?) -> [String] {
+        guard let data else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+    private func saveRecents(_ list: [String]) {
+        recentDropoffsData = try? JSONEncoder().encode(list)
+    }
+    private func pushRecent(_ address: String) {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var list = recentDropoffs.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame }
+        list.insert(trimmed, at: 0)
+        if list.count > 10 { list = Array(list.prefix(10)) }
+        recentDropoffs = list
+        saveRecents(list)
+    }
+
+    // MARK: - Actions
+    private func requestRide() {
+        if !dropoffText.trimmingCharacters(in: .whitespaces).isEmpty {
+            pushRecent(dropoffText)
+        }
+        rideManager.requestDrivers(
+            pickup: pickupText,
+            dropoff: dropoffText,
+            rideType: rideType,
+            near: region.center
+        )
+        showDriverSheet = true
     }
 }
+
+
+
+
+
 
 
 

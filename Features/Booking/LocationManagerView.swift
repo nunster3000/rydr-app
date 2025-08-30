@@ -4,51 +4,55 @@
 //
 //  Created by Khris Nunnally on 7/27/25.
 //
-
-
 import SwiftUI
+import CoreLocation
 import MapKit
 
 struct LocationManagerView: View {
     @StateObject private var locationManager = LocationManager()
+
+    // Atlanta fallback; centers on the device as soon as we get a fix
     @State private var region = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.00902),
-        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        center: CLLocationCoordinate2D(latitude: 33.7490, longitude: -84.3880),
+        span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
     )
 
     var body: some View {
-        VStack {
-            if let location = locationManager.currentLocation {
-                Map(position: .constant(.region(region))) {
-                    UserAnnotation()
-                }
-                .mapControls {
-                    MapUserLocationButton()
-                }
-                .onAppear {
-                    region.center = location.coordinate
-                }
-                .frame(height: 300)
-                .cornerRadius(12)
-                .padding()
-                
-                Text("Latitude: \(location.coordinate.latitude)")
-                Text("Longitude: \(location.coordinate.longitude)")
-            } else {
-                Text("Requesting location...")
-                    .foregroundColor(.gray)
+        VStack(spacing: 16) {
+            Map(initialPosition: .region(region)) {
+                UserAnnotation() // Shows current user location
             }
+            .frame(height: 300)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+                // use a Publisher instead of onChange(of:) so we don’t need Equatable
+                .onReceive(locationManager.$lastLocation.compactMap { $0 }) { loc in
+                    region.center = loc.coordinate
+                }
+                .onAppear { locationManager.requestIfNeeded() }
 
-            Spacer()
+            HStack(spacing: 12) {
+                Button("Recenter") { locationManager.recenter(&region) }
+                Spacer()
+                Text(labelFor(locationManager.authorization))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .onAppear {
-            locationManager.requestLocation()
-        }
+        .padding()
         .navigationTitle("Your Location")
+    }
+
+    private func labelFor(_ status: CLAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "Permission: Not Determined"
+        case .restricted:    return "Permission: Restricted"
+        case .denied:        return "Permission: Denied"
+        case .authorizedWhenInUse: return "Permission: When In Use"
+        case .authorizedAlways:    return "Permission: Always"
+        @unknown default: return "Permission: Unknown"
+        }
     }
 }
 
-#Preview {
-    LocationManagerView()
-}
+
 

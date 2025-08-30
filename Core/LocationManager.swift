@@ -3,17 +3,14 @@
 //  RydrPlayground
 //
 //  Created by Khris Nunnally on 7/27/25.
-//
-
-
-import Foundation
 import CoreLocation
+import MapKit
 
-class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+final class LocationManager: NSObject, ObservableObject {
+    @Published var authorization: CLAuthorizationStatus = .notDetermined
+    @Published var lastLocation: CLLocation?
+
     private let manager = CLLocationManager()
-
-    @Published var currentLocation: CLLocation?
-    @Published var authorizationStatus: CLAuthorizationStatus?
 
     override init() {
         super.init()
@@ -22,40 +19,43 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         manager.distanceFilter = 10
     }
 
-    func requestLocation() {
-        manager.requestWhenInUseAuthorization()
-        manager.startUpdatingLocation()
+    /// Ask for permission / start updates only when needed.
+    func requestIfNeeded() {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways:
+            manager.startUpdatingLocation()
+        default:
+            break
+        }
     }
 
-    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
-        authorizationStatus = status
-        if status == .authorizedWhenInUse || status == .authorizedAlways {
+    /// One-tap recenter helper for a bound region.
+    func recenter(_ region: inout MKCoordinateRegion,
+                  span: MKCoordinateSpan = .init(latitudeDelta: 0.15, longitudeDelta: 0.15)) {
+        guard let c = lastLocation?.coordinate else { return }
+        region = MKCoordinateRegion(center: c, span: span)
+    }
+}
+
+extension LocationManager: CLLocationManagerDelegate {
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorization = manager.authorizationStatus
+        if authorization == .authorizedWhenInUse || authorization == .authorizedAlways {
             manager.startUpdatingLocation()
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        currentLocation = locations.last
+        lastLocation = locations.last
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("❌ Location update failed: \(error.localizedDescription)")
-    }
-
-    func getAddress(for coordinate: CLLocationCoordinate2D, completion: @escaping (String?) -> Void) {
-        let geocoder = CLGeocoder()
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-
-        geocoder.reverseGeocodeLocation(location) { placemarks, error in
-            if let placemark = placemarks?.first {
-                let address = [placemark.name, placemark.locality, placemark.administrativeArea]
-                    .compactMap { $0 }
-                    .joined(separator: ", ")
-                completion(address)
-            } else {
-                completion(nil)
-            }
-        }
+        print("CL error:", error.localizedDescription)
     }
 }
+
+
+
 
